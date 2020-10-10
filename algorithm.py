@@ -3,9 +3,11 @@ import sys
 import torch
 import torch.nn as nn
 from torch.optim import Adam
-from torch.autograd import Variable
 import torch.nn.functional as F
 import os
+from replay_buffer import ReplayMemory
+from random_process import OrnsteinUhlenbeckProcess
+import numpy as np
 
 
 def soft_update(target, source, tau):
@@ -18,11 +20,15 @@ def hard_update(target, source):
         target_param.data.copy_(param.data)
 
 
-# My previous implementation of DDPG was slightly different. See the repo
 class ActorPart1(nn.Module):
-    # The return will be the same size as the hidden_size
-    # Status: Done, optimize later
-    def __init__(self, hidden_size, num_inputs):
+    def __init__(self, num_inputs, hidden_size=128):
+        """
+        Arguments:
+            hidden_size: the size of the output 
+            num_inputs: the size of the input -- (batch_size*nagents, obs_shape)
+        Output:
+            x: individual thought -- (batch_size*nagents, hidden_size)
+        """
         super(ActorPart1, self).__init__()
         self.linear1 = nn.Linear(num_inputs, hidden_size)
         self.ln1 = nn.LayerNorm(hidden_size)
@@ -37,6 +43,7 @@ class ActorPart1(nn.Module):
         x = F.relu(x)
         x = self.linear2(x)
         x = self.ln2(x)
+        # x = F.relu(x)
         return x
         # returns "individual thought", size same as hidden_size, since this will go into the Attentional Unit
 
@@ -51,7 +58,7 @@ class AttentionUnit(nn.Module):
     then from agents selected by other initiators, Finally from other initiators, all based on
     proximity. "based on proximity" is the answer.
     """
-    def __init__(self, hidden_size, num_inputs):
+    def __init__(self, num_inputs, hidden_size):
         # num_inputs is for the size of "thoughts"
         # num_output is binary
         super(AttentionUnit, self).__init__()
@@ -73,12 +80,20 @@ class AttentionUnit(nn.Module):
 
 
 class ActorPart2(nn.Module):
-    def __init__(self, hidden_size, num_inputs, action_space):
+    def __init__(self, num_inputs, action_space, hidden_size=128):
+        """
+        Arguments:
+            hidden_size: the size of the output 
+            num_inputs: the size of the input -- (batch_size*nagents, obs_shape)
+        Output:
+            x: individual action -- (batch_size*nagents, action_shape)
+        """
         super(ActorPart2, self).__init__()
         self.action_space = action_space
         num_outputs = action_space.shape[0]
 
-        self.linear1 = nn.Linear(num_inputs, hidden_size)
+        # TODO: hidden_size -> num_inputs
+        self.linear1 = nn.Linear(hidden_size, hidden_size)
         self.ln1 = nn.LayerNorm(hidden_size)
 
         self.linear2 = nn.Linear(hidden_size, hidden_size)
@@ -88,8 +103,6 @@ class ActorPart2(nn.Module):
         self.mu.weight.data.mul_(0.1)
         self.mu.bias.data.mul_(0.1)
 
-        self.softmax = F.softmax(num_outputs, dim=0)
-
     def forward(self, inputs):
         x = inputs
         x = self.linear1(x)
@@ -98,14 +111,12 @@ class ActorPart2(nn.Module):
         x = self.linear2(x)
         x = self.ln2(x)
         x = F.relu(x)
-        mu = F.tanh(self.mu(x))
-        output = self.softmax(mu)
-        return output
-        # This is the softmax probabilities for the actions of the agent
+        mu = torch.tanh(self.mu(x))
+        return mu
 
 
 class Critic(nn.Module):
-    def __init__(self, hidden_size, num_inputs, action_space):
+    def __init__(self, num_inputs, action_space, hidden_size):
         super(Critic, self).__init__()
         self.action_space = action_space
         num_outputs = action_space.shape[0]
@@ -114,12 +125,9 @@ class Critic(nn.Module):
         self.ln1 = nn.LayerNorm(hidden_size)
 
         self.linear2 = nn.Linear(hidden_size + num_outputs, hidden_size)
-        # I think this is because on the second layer of critic, we concatenate the observation and the actor's action,
-        # and the observation space
-        # TODO: What's the reason behind this and can we do better?
         self.ln2 = nn.LayerNorm(hidden_size)
 
-        self.V = nn.Linear(hidden_size, 1)  # This is the Q value with NN as function approximator
+        self.V = nn.Linear(hidden_size, 1)
         self.V.weight.data.mul_(0.1)
         self.V.bias.data.mul_(0.1)
 
@@ -129,7 +137,7 @@ class Critic(nn.Module):
         x = self.ln1(x)
         x = F.relu(x)
 
-        x = torch.cat((x, actions), 1)
+        x = torch.cat((x, actions), -1)
         x = self.linear2(x)
         x = self.ln2(x)
         x = F.relu(x)
@@ -137,122 +145,129 @@ class Critic(nn.Module):
         return V
 
 
-class ATOC_COMA_trainer(object):
-    def __init__(self, gamma, tau, hidden_size, num_inputs, action_space):
+class ATOC_trainer(object):
+    def __init__(self, gamma, tau, hidden_size, observation_space, action_space, args):
 
-        self.num_inputs = num_inputs
+        self.num_inputs = observation_space.shape[0]
         self.action_space = action_space
-
-        # Define actor part 1
-        self.actor_p1 = ActorPart1(hidden_size, self.num_inputs)
-        self.actor_target_p1 = ActorPart1(hidden_size, self.num_inputs)
-        #self.actor_perturbed_p1 = ActorPart1(hidden_size, self.num_inputs)  #TODO: What is this for?
-        self.actor_optim_p1 = Adam(self.actor_p1.parameters(), lr=1e-4)
-
-        # Define actor part 2
-        self.actor_p2 = ActorPart2(hidden_size, self.num_inputs, self.action_space)
-        self.actor_target_p2 = ActorPart2(hidden_size, self.num_inputs, self.action_space)
-        #self.actor_perturbed_p2 = ActorPart2(hidden_size, self.num_inputs, self.action_space)  #TODO: What is this for?
-        self.actor_optim_p2 = Adam(self.actor_p2.parameters(), lr=1e-4)
-
-        self.critic = Critic(hidden_size, self.num_inputs, self.action_space)
-        self.critic_target = Critic(hidden_size, self.num_inputs, self.action_space)
-        self.critic_optim = Adam(self.critic.parameters(), lr=1e-3)
-
         self.gamma = gamma
         self.tau = tau
+        self.args = args
 
+        # Define actor part 1
+        self.actor_p1 = ActorPart1(self.num_inputs, hidden_size)
+        self.actor_target_p1 = ActorPart1(self.num_inputs, hidden_size)
+        #self.actor_optim_p1 = Adam(self.actor_p1.parameters(), lr=1e-4)
+
+        # Define actor part 2
+        self.actor_p2 = ActorPart2(self.num_inputs, self.action_space, hidden_size)
+        self.actor_target_p2 = ActorPart2(self.num_inputs, self.action_space, hidden_size)
+        self.actor_optim = Adam([
+            {'params': self.actor_p1.parameters(), 'lr': self.args.actor_lr},
+            {'params': self.actor_p2.parameters(), 'lr': self.args.actor_lr}
+            ])
+            
+
+        self.critic = Critic(self.num_inputs, self.action_space, hidden_size)
+        self.critic_target = Critic(self.num_inputs, self.action_space, hidden_size)
+        self.critic_optim = Adam(self.critic.parameters(), lr=self.args.critic_lr)
+
+        # Make sure target is with the same weight
         hard_update(self.actor_target_p1, self.actor_p1)
-        hard_update(self.actor_target_p2, self.actor_p2)  # Make sure target is with the same weight
+        hard_update(self.actor_target_p2, self.actor_p2)
         hard_update(self.critic_target, self.critic)
 
-    def select_action(self, state, action_noise=None, param_noise=None):
-        '''
-        Here, I am first trying to have the algorithm working without the attentional communication unit.
-        I want to make sure the split actor 1 and actor 2 gradients are calculated correctly, and figure out how to
-        share actor policy parameters
-        '''
+        # Create replay buffer
+        self.memory = ReplayMemory(args.memory_size)
+        self.random_process = OrnsteinUhlenbeckProcess(size=action_space.shape[0], theta=args.ou_theta, mu=args.ou_mu, sigma=args.ou_sigma)
+
+
+
+    def select_action(self, state, action_noise=True):
         # TODO: This needs an overhaul since here the attention and communication modules come in
         # TODO: First make it work without the attentional and communication units
         self.actor_p1.eval()  # setting the actor in evaluation mode
         self.actor_p2.eval()
-
-        # TODO: Originally there was parameter noise incorporated, using the actor_purturbed, revisit original code
-        actor1_action = self.actor_p1((Variable(state)))  # this gets us the thoughts
-        actor2_action = self.actor_p2(Variable(actor1_action))  # directly passing thoughts to actor2
+        state = np.array(state).astype(np.float32)
+        thoughts = self.actor_p1(torch.from_numpy(state))  # (nagents, obs_shape)
+        actor2_action = self.actor_p2(thoughts)  # directly passing thoughts to actor2
 
         self.actor_p1.train()
         self.actor_p2.train()
-        final_action = actor2_action.data
 
-        if action_noise is not None:
-            final_action += torch.Tensor(action_noise.noise())
+        final_action = actor2_action.data.numpy()
+        final_action += action_noise * self.random_process.sample()
 
-        return final_action.clamp(-1, 1)  # TODO: revisit the theory behind clamping/clipping
+        return np.clip(final_action, -1, 1)
 
-    def update_parameters(self, batch):
+    def update_parameters(self):
         # TODO: How to update (get gradients for) actor_part1. I think the dynamic graph should update itself
         # TODO: understand how they batches are working. Currently I am assuming they work as they should
-        state_batch = Variable(torch.cat(batch.state))
-        action_batch = Variable(torch.cat(batch.action))
-        reward_batch = Variable(torch.cat(batch.reward))
-        mask_batch = Variable(torch.cat(batch.mask))  # TODO: What is this mask?
-        next_state_batch = Variable(torch.cat(batch.next_state))
+        batch = self.memory.sample(self.args.batch_size)
+        state_batch = np.array(batch.state).astype(np.float32)
+        action_batch = np.array(batch.action).astype(np.float32)
+        reward_batch = np.array(batch.reward).astype(np.float32)
+        done_batch = np.array(batch.done).astype(np.float32)
+        next_state_batch = np.array(batch.next_state).astype(np.float32)
 
-        next_action_batch = self.actor_target(next_state_batch)
-        next_state_action_values = self.critic_target(next_state_batch, next_action_batch)
+        # update critic
+        next_thoughts_batch = self.actor_target_p1(torch.from_numpy(next_state_batch))
+        next_action_batch = self.actor_target_p2(next_thoughts_batch)
+        next_Q_values = self.critic_target(torch.from_numpy(next_state_batch), next_action_batch)
 
-        reward_batch = reward_batch.unsqueeze(1)
-        mask_batch = mask_batch.unsqueeze(1)
-        expected_state_action_batch = reward_batch + (self.gamma * mask_batch * next_state_action_values)
+
+        expected_Q_batch = torch.from_numpy(reward_batch) + (self.gamma * torch.from_numpy(1.0 - done_batch) * next_Q_values).detach()
 
         self.critic_optim.zero_grad()
 
-        state_action_batch = self.critic((state_batch), (action_batch))
+        Q_batch = self.critic(torch.from_numpy(state_batch), torch.from_numpy(action_batch))
 
-        value_loss = F.mse_loss(state_action_batch, expected_state_action_batch)
+        value_loss = F.mse_loss(Q_batch, expected_Q_batch)
         value_loss.backward()
         self.critic_optim.step()
-
-        # TODO: I NEED TO MAKE CHANGES HERE. EVERYTHING ABOVE SEEMS TO BE FINE
+        
+        # update actor
         self.actor_optim.zero_grad()
 
-        policy_loss = -self.critic((state_batch), self.actor((state_batch)))
+        new_thoughts = self.actor_p1(torch.from_numpy(state_batch))
+        new_actions  = self.actor_p2(new_thoughts)
+        policy_loss = -self.critic(torch.from_numpy(state_batch), new_actions)
 
         policy_loss = policy_loss.mean()
         policy_loss.backward()
         self.actor_optim.step()
 
-        soft_update(self.actor_target, self.actor, self.tau)
+        soft_update(self.actor_target_p1, self.actor_p1, self.tau)
+        soft_update(self.actor_target_p2, self.actor_p2, self.tau)
         soft_update(self.critic_target, self.critic, self.tau)
 
         return value_loss.item(), policy_loss.item()
 
-    def perturb_actor_parameters(self, param_noise):
-        """Apply parameter noise to actor model, for exploration"""
-        hard_update(self.actor_perturbed, self.actor)
-        params = self.actor_perturbed.state_dict()
-        for name in params:
-            if 'ln' in name:
-                pass
-            param = params[name]
-            param += torch.randn(param.shape) * param_noise.current_stddev
-
-    def save_model(self, env_name, suffix="", actor_path=None, critic_path=None):
+    def save_model(self, env_name, suffix=""):
         if not os.path.exists('models/'):
             os.makedirs('models/')
 
-        if actor_path is None:
-            actor_path = "models/ddpg_actor_{}_{}".format(env_name, suffix)
-        if critic_path is None:
-            critic_path = "models/ddpg_critic_{}_{}".format(env_name, suffix)
-        print('Saving models to {} and {}'.format(actor_path, critic_path))
-        torch.save(self.actor.state_dict(), actor_path)
-        torch.save(self.critic.state_dict(), critic_path)
+        save_path = "models/ddpg_{}_{}".format(env_name, suffix)
+        model = {
+            'actor_p1': self.actor_p1.state_dict(),
+            'actor_target_p1': self.actor_target_p1.state_dict(),
+            'actor_p2': self.actor_p2.state_dict(),
+            'actor_target_p2': self.actor_target_p2.state_dict(),
+            'critic'  : self.critic.state_dict(),
+            'critic_target': self.critic_target.state_dict()
+        }
+        torch.save(model, save_path)
+        print('Saving models to {}'.format(save_path))
 
-    def load_model(self, actor_path, critic_path):
-        print('Loading models from {} and {}'.format(actor_path, critic_path))
-        if actor_path is not None:
-            self.actor.load_state_dict(torch.load(actor_path))
-        if critic_path is not None:
-            self.critic.load_state_dict(torch.load(critic_path))
+    def load_model(self, env_name, suffix="", save_path=None):
+        if save_path == None:
+            save_path = "models/ddpg_{}_{}".format(env_name, suffix)
+        print('Loading models from {} and {}'.format(save_path))
+        model = torch.load(save_path)
+        self.actor_p1.load_state_dict(model['actor_p1'])
+        self.actor_target_p1.load_state_dict(model['actor_target_p1'])
+        self.actor_p2.load_state_dict(model['actor_p2'])
+        self.actor_target_p2.load_state_dict(model['actor_target_p2'])
+        self.critic.load_state_dict(model['critic'])
+        self.critic_target.load_state_dict(model['critic_target'])
+

@@ -6,44 +6,42 @@ import pickle
 import sys
 
 # Import PyTorch Stuff
-import torch
-import torch.nn as nn
-from torch.optim import Adam
-from torch.autograd import Variable
-import torch.nn.functional as F
+# import torch
+# import torch.nn as nn
 
 # Import our algorithm
-from algorithm import ATOC_COMA_trainer
+from algorithm import ATOC_trainer
 
 
 def parse_args():
     parser = argparse.ArgumentParser("Reinforcement Learning experiments for multiagent environments")
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
-    parser.add_argument("--max-episode-len", type=int, default=25, help="maximum episode length")
-    parser.add_argument("--num-episodes", type=int, default=6000, help="number of episodes")
-    parser.add_argument("--num-adversaries", type=int, default=0, help="number of adversaries")
-    parser.add_argument("--good-policy", type=str, default="maddpg", help="policy for good agents")  # maddpg: global q function, ddpg: local q function
-    parser.add_argument("--adv-policy", type=str, default="maddpg", help="policy of adversaries")
+    parser.add_argument("--max_episode_len", type=int, default=25, help="maximum episode length")
+    parser.add_argument("--num_episodes", type=int, default=25000, help="number of episodes")
     # Core training parameters
-    parser.add_argument("--lr", type=float, default=1e-2, help="learning rate for Adam optimizer")
-    parser.add_argument("--gamma", type=float, default=0.95, help="discount factor")
-    parser.add_argument("--batch-size", type=int, default=1024, help="number of episodes to optimize at the same time")
-    parser.add_argument("--num-units", type=int, default=64, help="number of units in the mlp")
-    parser.add_argument("--tau", type=float, default=0.001, metavar='G',
-                        help='discount factor for model (default: 0.001)')
+    parser.add_argument("--actor_lr", type=float, default=1e-3, help="learning rate for actor")
+    parser.add_argument("--critic_lr", type=float, default=1e-3, help="learning rate for critic")
+    parser.add_argument("--gamma", type=float, default=0.96, help="discount factor")
+    parser.add_argument("--num_units", type=int, default=128, help="number of units in the mlp")
+    parser.add_argument("--tau", type=float, default=0.001, metavar='G', help='discount factor for model (default: 0.001)')
+    parser.add_argument("--memory_size", type=int, default=100000, help='size of the replay memory')
+    parser.add_argument("--warmup_size", type=int, default=1000, help='')
+    parser.add_argument("--batch_size", type=int, default=256, help="number of steps to optimize at the same time")
+    parser.add_argument("--ou_theta", type=float, default=0.15, help="noise theta")
+    parser.add_argument("--ou_sigma", type=float, default=0.2, help="noise sigma")
+    parser.add_argument("--ou_mu", type=float, default=0.0, help="noise mu")
     # Checkpointing
-    parser.add_argument("--exp-name", type=str, default='test', help="name of the experiment")
-    parser.add_argument("--save-dir", type=str, default="/home/ubuntu/maddpg/saved_policy", help="directory in which training state and model should be saved")
-    parser.add_argument("--save-rate", type=int, default=1000, help="save model once every time this many episodes are completed")
-    parser.add_argument("--load-dir", type=str, default="", help="directory in which training state and model are loaded")
+    parser.add_argument("--exp_name", type=str, default='test', help="name of the experiment")
+    parser.add_argument("--save_path", type=str, default="", help="directory in which training state and model should be saved")
+    parser.add_argument("--save_rate", type=int, default=100, help="save model once every time this many episodes are completed")
     # Evaluation
     parser.add_argument("--restore", action="store_true", default=False)
-    parser.add_argument("--display", action="store_true", default=True)
+    parser.add_argument("--display", action="store_true", default=False)
     parser.add_argument("--benchmark", action="store_true", default=False)
     parser.add_argument("--benchmark-iters", type=int, default=100000, help="number of iterations run for benchmarking")
     parser.add_argument("--benchmark-dir", type=str, default="./benchmark_files/", help="directory where benchmark data is saved")
-    parser.add_argument("--plots-dir", type=str, default="/home/ubuntu/maddpg/generated_plots", help="directory where plot data is saved")
+    parser.add_argument("--plots_dir", type=str, default="./results/", help="directory where plot data is saved")
     return parser.parse_args()
 
 
@@ -67,7 +65,73 @@ def train(arglist):
     # Create environment. This takess the scenario and creates a world, and creates and environment with all the
     # functions required. This is similar to the AI Gym environment.
     env = make_env(arglist.scenario, arglist, arglist.benchmark)
-    trainer = ATOC_COMA_trainer(arglist.gamma, arglist.tau, arglist.num_units, env.observation_space[0], env.action_space[0])
+    trainer = ATOC_trainer(arglist.gamma, arglist.tau, arglist.num_units, env.observation_space[0], env.action_space[0], arglist)
+
+    episode_step = 0
+    agent_rewards = [[0.0] for _ in range(env.n)]
+    episode_rewards = [0.0]
+    final_save_rewards = [] # sum of rewards for training curve
+    train_step = 0
+    time_start = time.time()
+    obs_n = env.reset()
+
+    print('Starting iterations...')
+    while True:
+        action_n = trainer.select_action(obs_n)
+        new_obs_n, reward_n, done_n, info_n = env.step(action_n)
+        # print("reward_n", reward_n)
+        
+        episode_step += 1
+        train_step += 1
+        done = all(done_n)
+        terminal = (episode_step >= arglist.max_episode_len)
+
+        # collect experience
+        for index in range(env.n):
+            trainer.memory.push(obs_n[index], action_n[index], done_n[index], new_obs_n[index], reward_n[index])
+
+        obs_n = new_obs_n
+
+        for i, rew in enumerate(reward_n):
+            episode_rewards[-1] += rew
+            agent_rewards[i][-1] += rew
+
+        if done or terminal:
+            print("episodes", len(episode_rewards))
+            obs_n = env.reset()
+            episode_step = 0
+            episode_rewards.append(0)
+            for a in agent_rewards:
+                a.append(0)
+
+        # for displaying learned policies
+        if arglist.display:
+            # time.sleep(0.1)
+            env.render()
+            # continue
+
+        # update trainer, if not in display mode
+        loss = None
+        print("state", len(trainer.memory), train_step)
+        if (len(trainer.memory) >= arglist.warmup_size) and (train_step % 25) == 0:
+            loss = trainer.update_parameters()
+
+        # save model and display training output
+        if terminal and (len(episode_rewards) % arglist.save_rate == 0):
+            trainer.save_model(arglist.exp_name, suffix=str(len(episode_rewards)//arglist.save_rate))
+            print("steps: {}, episodes: {},, mean_episode_reward: {}, time: {}".format(
+                train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate:]), round(time.time() - time_start, 3)))
+            time_start = time.time()
+            final_save_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
+
+        # save final episodes rewards for plotting training results
+        if len(episode_rewards) > arglist.num_episodes:
+            reward_file_name = arglist.plots_dir + arglist.exp_name + '_rewards.pkl'
+            with open(reward_file_name, 'wb') as fp:
+                pickle.dump(final_save_rewards, fp)
+
+            print("Finish total of {} episodes.".format(len(episode_rewards)))
+            break
 
 
 if __name__=="__main__":
