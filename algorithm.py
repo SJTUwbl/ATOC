@@ -90,18 +90,18 @@ class ActorPart2(nn.Module):
         """
         super(ActorPart2, self).__init__()
         self.action_space = action_space
-        num_outputs = action_space.shape[0]
+        num_outputs = action_space.n
 
         # TODO: hidden_size -> num_inputs
         self.linear1 = nn.Linear(hidden_size, hidden_size)
         self.ln1 = nn.LayerNorm(hidden_size)
 
-        self.linear2 = nn.Linear(hidden_size, hidden_size)
-        self.ln2 = nn.LayerNorm(hidden_size)
+        self.linear2 = nn.Linear(hidden_size, num_outputs)
+        # self.ln2 = nn.LayerNorm(hidden_size)
 
-        self.mu = nn.Linear(hidden_size, num_outputs)
-        self.mu.weight.data.mul_(0.1)
-        self.mu.bias.data.mul_(0.1)
+        # self.mu = nn.Linear(hidden_size, num_outputs)
+        # self.mu.weight.data.mul_(0.1)
+        # self.mu.bias.data.mul_(0.1)
 
     def forward(self, inputs):
         x = inputs
@@ -109,17 +109,15 @@ class ActorPart2(nn.Module):
         x = self.ln1(x)
         x = F.relu(x)
         x = self.linear2(x)
-        x = self.ln2(x)
-        x = F.relu(x)
-        mu = torch.tanh(self.mu(x))
-        return mu
+        x = torch.sigmoid(x)
+        return x
 
 
 class Critic(nn.Module):
     def __init__(self, num_inputs, action_space, hidden_size):
         super(Critic, self).__init__()
         self.action_space = action_space
-        num_outputs = action_space.shape[0]
+        num_outputs = action_space.n
 
         self.linear1 = nn.Linear(num_inputs, hidden_size)
         self.ln1 = nn.LayerNorm(hidden_size)
@@ -179,7 +177,7 @@ class ATOC_trainer(object):
 
         # Create replay buffer
         self.memory = ReplayMemory(args.memory_size)
-        self.random_process = OrnsteinUhlenbeckProcess(size=action_space.shape[0], theta=args.ou_theta, mu=args.ou_mu, sigma=args.ou_sigma)
+        self.random_process = OrnsteinUhlenbeckProcess(size=action_space.n, theta=args.ou_theta, mu=args.ou_mu, sigma=args.ou_sigma)
 
 
 
@@ -259,11 +257,10 @@ class ATOC_trainer(object):
         torch.save(model, save_path)
         print('Saving models to {}'.format(save_path))
 
-    def load_model(self, env_name, suffix="", save_path=None):
-        if save_path == None:
-            save_path = "models/ddpg_{}_{}".format(env_name, suffix)
-        print('Loading models from {} and {}'.format(save_path))
-        model = torch.load(save_path)
+    def load_model(self, env_name, suffix=""):
+        load_path = "models/ddpg_{}_{}".format(env_name, suffix)
+        print('Loading models from {}'.format(load_path))
+        model = torch.load(load_path)
         self.actor_p1.load_state_dict(model['actor_p1'])
         self.actor_target_p1.load_state_dict(model['actor_target_p1'])
         self.actor_p2.load_state_dict(model['actor_p2'])

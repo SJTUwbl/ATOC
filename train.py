@@ -20,14 +20,14 @@ def parse_args():
     parser.add_argument("--max_episode_len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--num_episodes", type=int, default=25000, help="number of episodes")
     # Core training parameters
-    parser.add_argument("--actor_lr", type=float, default=1e-3, help="learning rate for actor")
+    parser.add_argument("--actor_lr", type=float, default=3e-4, help="learning rate for actor")
     parser.add_argument("--critic_lr", type=float, default=1e-3, help="learning rate for critic")
     parser.add_argument("--gamma", type=float, default=0.96, help="discount factor")
     parser.add_argument("--num_units", type=int, default=128, help="number of units in the mlp")
     parser.add_argument("--tau", type=float, default=0.001, metavar='G', help='discount factor for model (default: 0.001)')
-    parser.add_argument("--memory_size", type=int, default=100000, help='size of the replay memory')
-    parser.add_argument("--warmup_size", type=int, default=1000, help='')
-    parser.add_argument("--batch_size", type=int, default=256, help="number of steps to optimize at the same time")
+    parser.add_argument("--memory_size", type=int, default=20000, help='size of the replay memory')
+    parser.add_argument("--warmup_size", type=int, default=3000, help='number of steps before training, must larger than batch_size')
+    parser.add_argument("--batch_size", type=int, default=1024, help="number of steps to optimize at the same time")
     parser.add_argument("--ou_theta", type=float, default=0.15, help="noise theta")
     parser.add_argument("--ou_sigma", type=float, default=0.2, help="noise sigma")
     parser.add_argument("--ou_mu", type=float, default=0.0, help="noise mu")
@@ -36,6 +36,8 @@ def parse_args():
     parser.add_argument("--save_path", type=str, default="", help="directory in which training state and model should be saved")
     parser.add_argument("--save_rate", type=int, default=100, help="save model once every time this many episodes are completed")
     # Evaluation
+
+    parser.add_argument("--load", type=str, default="", help="which model to load")
     parser.add_argument("--restore", action="store_true", default=False)
     parser.add_argument("--display", action="store_true", default=False)
     parser.add_argument("--benchmark", action="store_true", default=False)
@@ -62,11 +64,13 @@ def make_env(scenario_name, arglist, benchmark=False):
 
 
 def train(arglist):
-    # Create environment. This takess the scenario and creates a world, and creates and environment with all the
-    # functions required. This is similar to the AI Gym environment.
     env = make_env(arglist.scenario, arglist, arglist.benchmark)
     trainer = ATOC_trainer(arglist.gamma, arglist.tau, arglist.num_units, env.observation_space[0], env.action_space[0], arglist)
 
+    if arglist.display or arglist.restore or arglist.benchmark:
+        trainer.load_model(arglist.exp_name, suffix=arglist.load)
+
+    action_noise = False if arglist.display else True
     episode_step = 0
     agent_rewards = [[0.0] for _ in range(env.n)]
     episode_rewards = [0.0]
@@ -77,7 +81,7 @@ def train(arglist):
 
     print('Starting iterations...')
     while True:
-        action_n = trainer.select_action(obs_n)
+        action_n = trainer.select_action(obs_n, action_noise)
         new_obs_n, reward_n, done_n, info_n = env.step(action_n)
         # print("reward_n", reward_n)
         
@@ -97,7 +101,7 @@ def train(arglist):
             agent_rewards[i][-1] += rew
 
         if done or terminal:
-            print("episodes", len(episode_rewards))
+            # print("episode reward", episode_rewards[-1])
             obs_n = env.reset()
             episode_step = 0
             episode_rewards.append(0)
@@ -106,20 +110,19 @@ def train(arglist):
 
         # for displaying learned policies
         if arglist.display:
-            # time.sleep(0.1)
+            time.sleep(0.1)
             env.render()
-            # continue
+            continue
 
         # update trainer, if not in display mode
         loss = None
-        print("state", len(trainer.memory), train_step)
-        if (len(trainer.memory) >= arglist.warmup_size) and (train_step % 25) == 0:
+        if (len(trainer.memory) >= arglist.warmup_size) and (train_step % 100) == 0:
             loss = trainer.update_parameters()
 
         # save model and display training output
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
             trainer.save_model(arglist.exp_name, suffix=str(len(episode_rewards)//arglist.save_rate))
-            print("steps: {}, episodes: {},, mean_episode_reward: {}, time: {}".format(
+            print("steps: {}, episodes: {}, mean_episode_reward: {}, time: {}".format(
                 train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate:]), round(time.time() - time_start, 3)))
             time_start = time.time()
             final_save_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
