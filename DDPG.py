@@ -24,6 +24,7 @@ parser.add_argument('--learning_rate', default=1e-4, type=float)
 parser.add_argument('--gamma', default=0.96, type=int) # discounted factor
 parser.add_argument('--capacity', default=20000, type=int) # replay buffer size
 parser.add_argument('--batch_size', default=1024, type=int) # mini batch size
+parser.add_argument('--update_iteration', default=2, type=int)
 parser.add_argument('--seed', default=False, type=bool)
 parser.add_argument('--random_seed', default=9526, type=int)
 # optional parameters
@@ -36,7 +37,6 @@ parser.add_argument('--render_interval', default=100, type=int) # after render_i
 parser.add_argument('--exploration_noise', default=0.1, type=float)
 parser.add_argument('--max_episode', default=100000, type=int) # num of games
 parser.add_argument('--print_log', default=5, type=int)
-parser.add_argument('--update_iteration', default=2, type=int)
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -172,6 +172,9 @@ class DDPG(object):
             next_state = torch.FloatTensor(y).to(device)
             done = torch.FloatTensor(1-d).to(device)
             reward = torch.FloatTensor(r).to(device)
+
+            print("shape")
+            print(state.shape, action.shape, next_state.shape, done.shape, reward.shape)
 
             # Compute the target Q value
             target_Q = self.critic_target(next_state, self.actor_target(next_state))

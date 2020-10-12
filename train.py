@@ -4,12 +4,6 @@ import os
 import time
 import pickle
 import sys
-
-# Import PyTorch Stuff
-# import torch
-# import torch.nn as nn
-
-# Import our algorithm
 from algorithm import ATOC_trainer
 
 
@@ -18,7 +12,7 @@ def parse_args():
     # Environment
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
     parser.add_argument("--max_episode_len", type=int, default=25, help="maximum episode length")
-    parser.add_argument("--num_episodes", type=int, default=25000, help="number of episodes")
+    parser.add_argument("--num_episodes", type=int, default=100000, help="number of episodes")
     # Core training parameters
     parser.add_argument("--actor_lr", type=float, default=3e-4, help="learning rate for actor")
     parser.add_argument("--critic_lr", type=float, default=1e-3, help="learning rate for critic")
@@ -27,7 +21,7 @@ def parse_args():
     parser.add_argument("--tau", type=float, default=0.001, metavar='G', help='discount factor for model (default: 0.001)')
     parser.add_argument("--memory_size", type=int, default=20000, help='size of the replay memory')
     parser.add_argument("--warmup_size", type=int, default=3000, help='number of steps before training, must larger than batch_size')
-    parser.add_argument("--batch_size", type=int, default=1024, help="number of steps to optimize at the same time")
+    parser.add_argument("--batch_size", type=int, default=2560, help="number of steps to optimize at the same time")
     parser.add_argument("--ou_theta", type=float, default=0.15, help="noise theta")
     parser.add_argument("--ou_sigma", type=float, default=0.2, help="noise sigma")
     parser.add_argument("--ou_mu", type=float, default=0.0, help="noise mu")
@@ -36,7 +30,6 @@ def parse_args():
     parser.add_argument("--save_path", type=str, default="", help="directory in which training state and model should be saved")
     parser.add_argument("--save_rate", type=int, default=100, help="save model once every time this many episodes are completed")
     # Evaluation
-
     parser.add_argument("--load", type=str, default="", help="which model to load")
     parser.add_argument("--restore", action="store_true", default=False)
     parser.add_argument("--display", action="store_true", default=False)
@@ -101,7 +94,7 @@ def train(arglist):
             agent_rewards[i][-1] += rew
 
         if done or terminal:
-            # print("episode reward", episode_rewards[-1])
+            # print("episode reward", episode_step)
             obs_n = env.reset()
             episode_step = 0
             episode_rewards.append(0)
@@ -116,7 +109,7 @@ def train(arglist):
 
         # update trainer, if not in display mode
         loss = None
-        if (len(trainer.memory) >= arglist.warmup_size) and (train_step % 100) == 0:
+        if (len(trainer.memory) >= arglist.warmup_size) and (train_step % 250) == 0:
             loss = trainer.update_parameters()
 
         # save model and display training output

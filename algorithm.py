@@ -9,6 +9,7 @@ from replay_buffer import ReplayMemory
 from random_process import OrnsteinUhlenbeckProcess
 import numpy as np
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 def soft_update(target, source, tau):
     for target_param, param in zip(target.parameters(), source.parameters()):
@@ -43,40 +44,40 @@ class ActorPart1(nn.Module):
         x = F.relu(x)
         x = self.linear2(x)
         x = self.ln2(x)
-        # x = F.relu(x)
+        x = F.relu(x)
         return x
-        # returns "individual thought", size same as hidden_size, since this will go into the Attentional Unit
+        # returns "individual thought", since this will go into the Attentional Unit
 
 
-class AttentionUnit(nn.Module):
-    # Currently using RNN, later try LSTM
-    # ref: https://pytorch.org/tutorials/intermediate/char_rnn_classification_tutorial.html
-    # ref for LSTM: https://github.com/MorvanZhou/PyTorch-Tutorial/blob/master/tutorial-contents/402_RNN_classifier.py
-    """
-    We assume a fixed communication bandwidth, which means each initiator can select at most m collaborators.
-    The initiator first chooses collaborators from agents who have not been selected,
-    then from agents selected by other initiators, Finally from other initiators, all based on
-    proximity. "based on proximity" is the answer.
-    """
-    def __init__(self, num_inputs, hidden_size):
-        # num_inputs is for the size of "thoughts"
-        # num_output is binary
-        super(AttentionUnit, self).__init__()
-        self.hidden_size = hidden_size
-        num_output = 1
-        self.i2h = nn.Linear(num_inputs + hidden_size, hidden_size)
-        self.i20 = nn.Linear(num_inputs + hidden_size, num_output)
-        self.sigmoid = nn.Sigmoid()
+# class AttentionUnit(nn.Module):
+#     # Currently using RNN, later try LSTM
+#     # ref: https://pytorch.org/tutorials/intermediate/char_rnn_classification_tutorial.html
+#     # ref for LSTM: https://github.com/MorvanZhou/PyTorch-Tutorial/blob/master/tutorial-contents/402_RNN_classifier.py
+#     """
+#     We assume a fixed communication bandwidth, which means each initiator can select at most m collaborators.
+#     The initiator first chooses collaborators from agents who have not been selected,
+#     then from agents selected by other initiators, Finally from other initiators, all based on
+#     proximity. "based on proximity" is the answer.
+#     """
+#     def __init__(self, num_inputs, hidden_size):
+#         # num_inputs is for the size of "thoughts"
+#         # num_output is binary
+#         super(AttentionUnit, self).__init__()
+#         self.hidden_size = hidden_size
+#         num_output = 1
+#         self.i2h = nn.Linear(num_inputs + hidden_size, hidden_size)
+#         self.i20 = nn.Linear(num_inputs + hidden_size, num_output)
+#         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, thoughts, hidden):  # thoughts is the output of actor_part1
-        combined = torch.cat((thoughts, hidden), 1)
-        hidden = self.i2h(combined)  # update the hidden state for next time-step
-        output = self.i20(combined)
-        output = self.sigmoid(output)
-        return output, hidden
+#     def forward(self, thoughts, hidden):  # thoughts is the output of actor_part1
+#         combined = torch.cat((thoughts, hidden), 1)
+#         hidden = self.i2h(combined)  # update the hidden state for next time-step
+#         output = self.i20(combined)
+#         output = self.sigmoid(output)
+#         return output, hidden
 
-    def initHidden(self):
-        return torch.zeros(1, self.hidden_size)  # maybe also try random initialization
+#     def initHidden(self):
+#         return torch.zeros(1, self.hidden_size)  # maybe also try random initialization
 
 
 class ActorPart2(nn.Module):
@@ -89,7 +90,6 @@ class ActorPart2(nn.Module):
             x: individual action -- (batch_size*nagents, action_shape)
         """
         super(ActorPart2, self).__init__()
-        self.action_space = action_space
         num_outputs = action_space.n
 
         # TODO: hidden_size -> num_inputs
@@ -97,11 +97,6 @@ class ActorPart2(nn.Module):
         self.ln1 = nn.LayerNorm(hidden_size)
 
         self.linear2 = nn.Linear(hidden_size, num_outputs)
-        # self.ln2 = nn.LayerNorm(hidden_size)
-
-        # self.mu = nn.Linear(hidden_size, num_outputs)
-        # self.mu.weight.data.mul_(0.1)
-        # self.mu.bias.data.mul_(0.1)
 
     def forward(self, inputs):
         x = inputs
@@ -116,26 +111,19 @@ class ActorPart2(nn.Module):
 class Critic(nn.Module):
     def __init__(self, num_inputs, action_space, hidden_size):
         super(Critic, self).__init__()
-        self.action_space = action_space
         num_outputs = action_space.n
 
-        self.linear1 = nn.Linear(num_inputs, hidden_size)
+        self.linear1 = nn.Linear(num_inputs + num_outputs, hidden_size)
         self.ln1 = nn.LayerNorm(hidden_size)
-
-        self.linear2 = nn.Linear(hidden_size + num_outputs, hidden_size)
+        self.linear2 = nn.Linear(hidden_size, hidden_size)
         self.ln2 = nn.LayerNorm(hidden_size)
-
         self.V = nn.Linear(hidden_size, 1)
-        self.V.weight.data.mul_(0.1)
-        self.V.bias.data.mul_(0.1)
 
     def forward(self, inputs, actions):
-        x = inputs
+        x = torch.cat((inputs, actions), 1)
         x = self.linear1(x)
         x = self.ln1(x)
         x = F.relu(x)
-
-        x = torch.cat((x, actions), -1)
         x = self.linear2(x)
         x = self.ln2(x)
         x = F.relu(x)
@@ -155,7 +143,6 @@ class ATOC_trainer(object):
         # Define actor part 1
         self.actor_p1 = ActorPart1(self.num_inputs, hidden_size)
         self.actor_target_p1 = ActorPart1(self.num_inputs, hidden_size)
-        #self.actor_optim_p1 = Adam(self.actor_p1.parameters(), lr=1e-4)
 
         # Define actor part 2
         self.actor_p2 = ActorPart2(self.num_inputs, self.action_space, hidden_size)
@@ -163,8 +150,7 @@ class ATOC_trainer(object):
         self.actor_optim = Adam([
             {'params': self.actor_p1.parameters(), 'lr': self.args.actor_lr},
             {'params': self.actor_p2.parameters(), 'lr': self.args.actor_lr}
-            ])
-            
+            ])            
 
         self.critic = Critic(self.num_inputs, self.action_space, hidden_size)
         self.critic_target = Critic(self.num_inputs, self.action_space, hidden_size)
@@ -179,66 +165,54 @@ class ATOC_trainer(object):
         self.memory = ReplayMemory(args.memory_size)
         self.random_process = OrnsteinUhlenbeckProcess(size=action_space.n, theta=args.ou_theta, mu=args.ou_mu, sigma=args.ou_sigma)
 
-
-
     def select_action(self, state, action_noise=True):
         # TODO: This needs an overhaul since here the attention and communication modules come in
         # TODO: First make it work without the attentional and communication units
-        self.actor_p1.eval()  # setting the actor in evaluation mode
-        self.actor_p2.eval()
-        state = np.array(state).astype(np.float32)
-        thoughts = self.actor_p1(torch.from_numpy(state))  # (nagents, obs_shape)
+        state = torch.FloatTensor(state).to(device)
+        thoughts = self.actor_p1(state)  # (nagents, obs_shape)
         actor2_action = self.actor_p2(thoughts)  # directly passing thoughts to actor2
 
-        self.actor_p1.train()
-        self.actor_p2.train()
-
         final_action = actor2_action.data.numpy()
+        # print("final_action", action_noise)
         final_action += action_noise * self.random_process.sample()
+        # print(final_action)
 
-        return np.clip(final_action, -1, 1)
+        return np.clip(final_action, 0.0, 1.0)
 
     def update_parameters(self):
-        # TODO: How to update (get gradients for) actor_part1. I think the dynamic graph should update itself
-        # TODO: understand how they batches are working. Currently I am assuming they work as they should
         batch = self.memory.sample(self.args.batch_size)
-        state_batch = np.array(batch.state).astype(np.float32)
-        action_batch = np.array(batch.action).astype(np.float32)
-        reward_batch = np.array(batch.reward).astype(np.float32)
-        done_batch = np.array(batch.done).astype(np.float32)
-        next_state_batch = np.array(batch.next_state).astype(np.float32)
+        state_batch = torch.FloatTensor(batch.state).to(device)
+        action_batch = torch.FloatTensor(batch.action).to(device)
+        reward_batch = torch.FloatTensor(batch.reward).to(device).reshape(-1,1)
+        done_batch = torch.FloatTensor(batch.done).to(device)
+        done_batch = (1.0 - done_batch).reshape(-1,1)
+        next_state_batch = torch.FloatTensor(batch.next_state).to(device)
 
         # update critic
-        next_thoughts_batch = self.actor_target_p1(torch.from_numpy(next_state_batch))
+        next_thoughts_batch = self.actor_target_p1(next_state_batch)
         next_action_batch = self.actor_target_p2(next_thoughts_batch)
-        next_Q_values = self.critic_target(torch.from_numpy(next_state_batch), next_action_batch)
+        next_Q_values = self.critic_target(next_state_batch, next_action_batch)
+        target_Q_batch = reward_batch + (self.gamma * done_batch * next_Q_values).detach()
+        Q_batch = self.critic(state_batch, action_batch)
 
-
-        expected_Q_batch = torch.from_numpy(reward_batch) + (self.gamma * torch.from_numpy(1.0 - done_batch) * next_Q_values).detach()
-
+        value_loss = F.mse_loss(Q_batch, target_Q_batch)
         self.critic_optim.zero_grad()
-
-        Q_batch = self.critic(torch.from_numpy(state_batch), torch.from_numpy(action_batch))
-
-        value_loss = F.mse_loss(Q_batch, expected_Q_batch)
         value_loss.backward()
         self.critic_optim.step()
         
         # update actor
-        self.actor_optim.zero_grad()
-
-        new_thoughts = self.actor_p1(torch.from_numpy(state_batch))
+        new_thoughts = self.actor_p1(state_batch)
         new_actions  = self.actor_p2(new_thoughts)
-        policy_loss = -self.critic(torch.from_numpy(state_batch), new_actions)
+        policy_loss = -self.critic(state_batch, new_actions)
 
         policy_loss = policy_loss.mean()
+        self.actor_optim.zero_grad()
         policy_loss.backward()
         self.actor_optim.step()
 
         soft_update(self.actor_target_p1, self.actor_p1, self.tau)
         soft_update(self.actor_target_p2, self.actor_p2, self.tau)
         soft_update(self.critic_target, self.critic, self.tau)
-
         return value_loss.item(), policy_loss.item()
 
     def save_model(self, env_name, suffix=""):
