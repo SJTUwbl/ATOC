@@ -13,6 +13,7 @@ def parse_args():
     parser.add_argument("--scenario", type=str, default="simple_spread", help="name of the scenario script")
     parser.add_argument("--max_episode_len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--num_episodes", type=int, default=100000, help="number of episodes")
+    parser.add_argument("--T", type=int, default=15, help="number of step to initiate a communicagtion group")
     # Core training parameters
     parser.add_argument("--actor_lr", type=float, default=1e-3, help="learning rate for actor")
     parser.add_argument("--critic_lr", type=float, default=1e-3, help="learning rate for critic")
@@ -75,7 +76,7 @@ def train(arglist):
 
     print('Starting iterations...')
     while True:
-        action_n = trainer.select_action(obs_n, action_noise)
+        action_n = trainer.select_action(obs_n, episode_step, arglist.T action_noise)
         new_obs_n, reward_n, done_n, info_n = env.step(action_n)
         # print("reward_n", reward_n)
         

@@ -51,13 +51,8 @@ class ActorPart1(nn.Module):
 
 class AttentionUnit(nn.Module):
     # Currently using MLP, later try LSTM
-    """
-    We assume a fixed communication bandwidth, which means each initiator can select at most m collaborators.
-    The initiator first chooses collaborators from agents who have not been selected,
-    then from agents selected by other initiators, Finally from other initiators, all based on
-    proximity. "based on proximity" is the answer.
-    """
     def __init__(self, num_inputs, hidden_size):
+        # a binary classifier
         # num_inputs is for the size of "thoughts"
         super(AttentionUnit, self).__init__()
         num_output = 1
@@ -83,20 +78,22 @@ class CommunicationChannel(nn.Module):
         Arguments:
             hidden_size: the size of the "thoughts"
         """
+        self.hidden_size = hidden_size
         super(CommunicationChannel, self).__init__()
         self.bi_GRU = nn.GRU(actor_hidden_size, hidden_size, batch_first=True, bidirectional=True)
 
-    def forward(self, inputs, hidden_state):
+    def forward(self, inputs, init_hidden):
         """
         Arguments:
             inputs: "thoughts"  -- (batch_size, seq_len, actor_hidden_size)
         Output:
             x: intergrated thoughts -- (batch_size, seq_len, num_directions * hidden_size)
         """
-        x = inputs
+        x = self.bi_GRU(inputs, init_hidden)
+        return x
 
     def initHidden(self):
-        return torch.zeros(1, self.hidden_size)
+        return torch.zeros((2 * 1, self.hidden_size))
 
 
 
@@ -112,7 +109,7 @@ class ActorPart2(nn.Module):
         super(ActorPart2, self).__init__()
         num_outputs = action_space.n
 
-        self.linear1 = nn.Linear(hidden_size, hidden_size)
+        self.linear1 = nn.Linear(num_inputs, hidden_size)
         self.ln1 = nn.LayerNorm(hidden_size)
         self.linear2 = nn.Linear(hidden_size, num_outputs)
 
@@ -162,13 +159,21 @@ class ATOC_trainer(object):
         self.actor_p1 = ActorPart1(self.num_inputs, actor_hidden_size)
         self.actor_target_p1 = ActorPart1(self.num_inputs, actor_hidden_size)
 
+        # attention unit is not end-to-end trained
+        self.atten = AttentionUnit(actor_hidden_size, actor_hidden_size)
+
+        # Define Communication Channel
+        self.comm = CommunicationChannel(actor_hidden_size, actor_hidden_size)
+        self.comm_target = CommunicationChannel(actor_hidden_size, actor_hidden_size)
+        self.comm_optim = Adam(self.comm.parameters(), lr=self.args.actor_lr)
+
         # Define actor part 2
-        self.actor_p2 = ActorPart2(self.num_inputs, self.action_space, actor_hidden_size)
-        self.actor_target_p2 = ActorPart2(self.num_inputs, self.action_space, actor_hidden_size)
+        self.actor_p2 = ActorPart2(actor_hidden_size, self.action_space, actor_hidden_size)
+        self.actor_target_p2 = ActorPart2(actor_hidden_size, self.action_space, actor_hidden_size)
         self.actor_optim = Adam([
             {'params': self.actor_p1.parameters(), 'lr': self.args.actor_lr},
             {'params': self.actor_p2.parameters(), 'lr': self.args.actor_lr}
-            ])            
+            ])
 
         self.critic = Critic(self.num_inputs, self.action_space, critic_hidden_size)
         self.critic_target = Critic(self.num_inputs, self.action_space, critic_hidden_size)
@@ -176,6 +181,7 @@ class ATOC_trainer(object):
 
         # Make sure target is with the same weight
         hard_update(self.actor_target_p1, self.actor_p1)
+        hard_update(self.comm_target, self.comm)
         hard_update(self.actor_target_p2, self.actor_p2)
         hard_update(self.critic_target, self.critic)
 
@@ -183,17 +189,23 @@ class ATOC_trainer(object):
         self.memory = ReplayMemory(args.memory_size)
         self.random_process = OrnsteinUhlenbeckProcess(size=action_space.n, theta=args.ou_theta, mu=args.ou_mu, sigma=args.ou_sigma)
 
-    def select_action(self, state, action_noise=True):
-        # TODO: This needs an overhaul since here the attention and communication modules come in
-        # TODO: First make it work without the attentional and communication units
+    def select_action(self, state, step, T, action_noise=True):
         state = torch.FloatTensor(state).to(device)
+        # get thoughts for each agent
         thoughts = self.actor_p1(state)  # (nagents, obs_shape)
-        actor2_action = self.actor_p2(thoughts)  # directly passing thoughts to actor2
 
+        # decide whether to initiate communication every T steps
+        if step % T == 0:
+            atten_out = self.atten(thoughts) # (nagents, 1)
+            is_comm = atten_out.data.numpy()
+            is_comm = (atten_out > 0.5).squeeze()
+            
+
+
+        # directly passing thoughts to actor2
+        actor2_action = self.actor_p2(thoughts)
         final_action = actor2_action.data.numpy()
-        # print("final_action", action_noise)
         final_action += action_noise * self.random_process.sample()
-        # print(final_action)
 
         return np.clip(final_action, 0.0, 1.0)
 
