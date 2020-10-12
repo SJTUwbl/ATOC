@@ -49,35 +49,55 @@ class ActorPart1(nn.Module):
         # returns "individual thought", since this will go into the Attentional Unit
 
 
-# class AttentionUnit(nn.Module):
-#     # Currently using RNN, later try LSTM
-#     # ref: https://pytorch.org/tutorials/intermediate/char_rnn_classification_tutorial.html
-#     # ref for LSTM: https://github.com/MorvanZhou/PyTorch-Tutorial/blob/master/tutorial-contents/402_RNN_classifier.py
-#     """
-#     We assume a fixed communication bandwidth, which means each initiator can select at most m collaborators.
-#     The initiator first chooses collaborators from agents who have not been selected,
-#     then from agents selected by other initiators, Finally from other initiators, all based on
-#     proximity. "based on proximity" is the answer.
-#     """
-#     def __init__(self, num_inputs, hidden_size):
-#         # num_inputs is for the size of "thoughts"
-#         # num_output is binary
-#         super(AttentionUnit, self).__init__()
-#         self.hidden_size = hidden_size
-#         num_output = 1
-#         self.i2h = nn.Linear(num_inputs + hidden_size, hidden_size)
-#         self.i20 = nn.Linear(num_inputs + hidden_size, num_output)
-#         self.sigmoid = nn.Sigmoid()
+class AttentionUnit(nn.Module):
+    # Currently using MLP, later try LSTM
+    """
+    We assume a fixed communication bandwidth, which means each initiator can select at most m collaborators.
+    The initiator first chooses collaborators from agents who have not been selected,
+    then from agents selected by other initiators, Finally from other initiators, all based on
+    proximity. "based on proximity" is the answer.
+    """
+    def __init__(self, num_inputs, hidden_size):
+        # num_inputs is for the size of "thoughts"
+        super(AttentionUnit, self).__init__()
+        num_output = 1
+        self.linear1 = nn.Linear(num_inputs, hidden_size)
+        self.linear2 = nn.Linear(hidden_size, hidden_size)
+        self.linear3 = nn.Linear(hidden_size, num_output)
 
-#     def forward(self, thoughts, hidden):  # thoughts is the output of actor_part1
-#         combined = torch.cat((thoughts, hidden), 1)
-#         hidden = self.i2h(combined)  # update the hidden state for next time-step
-#         output = self.i20(combined)
-#         output = self.sigmoid(output)
-#         return output, hidden
+    def forward(self, thoughts, hidden):  
+        # thoughts is the output of actor_part1
+        x = self.linear1(x)
+        x = F.relu(x)
+        x = self.linear2(x)
+        x = F.relu(x)
+        x = self.linear3(x)
+        output = torch.sigmoid(x)
+        return output
 
-#     def initHidden(self):
-#         return torch.zeros(1, self.hidden_size)  # maybe also try random initialization
+
+
+class CommunicationChannel(nn.Module):
+    def __init__(self, actor_hidden_size, hidden_size):
+        """
+        Arguments:
+            hidden_size: the size of the "thoughts"
+        """
+        super(CommunicationChannel, self).__init__()
+        self.bi_GRU = nn.GRU(actor_hidden_size, hidden_size, batch_first=True, bidirectional=True)
+
+    def forward(self, inputs, hidden_state):
+        """
+        Arguments:
+            inputs: "thoughts"  -- (batch_size, seq_len, actor_hidden_size)
+        Output:
+            x: intergrated thoughts -- (batch_size, seq_len, num_directions * hidden_size)
+        """
+        x = inputs
+
+    def initHidden(self):
+        return torch.zeros(1, self.hidden_size)
+
 
 
 class ActorPart2(nn.Module):
@@ -85,17 +105,15 @@ class ActorPart2(nn.Module):
         """
         Arguments:
             hidden_size: the size of the output 
-            num_inputs: the size of the input -- (batch_size*nagents, obs_shape)
+            num_inputs: the size of the obs -- (batch_size*nagents, obs_shape)
         Output:
             x: individual action -- (batch_size*nagents, action_shape)
         """
         super(ActorPart2, self).__init__()
         num_outputs = action_space.n
 
-        # TODO: hidden_size -> num_inputs
         self.linear1 = nn.Linear(hidden_size, hidden_size)
         self.ln1 = nn.LayerNorm(hidden_size)
-
         self.linear2 = nn.Linear(hidden_size, num_outputs)
 
     def forward(self, inputs):
@@ -104,7 +122,7 @@ class ActorPart2(nn.Module):
         x = self.ln1(x)
         x = F.relu(x)
         x = self.linear2(x)
-        x = torch.sigmoid(x)
+        x = torch.tanh(x)
         return x
 
 
@@ -115,12 +133,12 @@ class Critic(nn.Module):
 
         self.linear1 = nn.Linear(num_inputs + num_outputs, hidden_size)
         self.ln1 = nn.LayerNorm(hidden_size)
-        self.linear2 = nn.Linear(hidden_size, hidden_size)
-        self.ln2 = nn.LayerNorm(hidden_size)
-        self.V = nn.Linear(hidden_size, 1)
+        self.linear2 = nn.Linear(hidden_size, hidden_size//2)
+        self.ln2 = nn.LayerNorm(hidden_size//2)
+        self.V = nn.Linear(hidden_size//2, 1)
 
     def forward(self, inputs, actions):
-        x = torch.cat((inputs, actions), 1)
+        x = torch.cat((inputs, actions), dim=1)
         x = self.linear1(x)
         x = self.ln1(x)
         x = F.relu(x)
@@ -132,7 +150,7 @@ class Critic(nn.Module):
 
 
 class ATOC_trainer(object):
-    def __init__(self, gamma, tau, hidden_size, observation_space, action_space, args):
+    def __init__(self, gamma, tau, actor_hidden_size, critic_hidden_size, observation_space, action_space, args):
 
         self.num_inputs = observation_space.shape[0]
         self.action_space = action_space
@@ -141,19 +159,19 @@ class ATOC_trainer(object):
         self.args = args
 
         # Define actor part 1
-        self.actor_p1 = ActorPart1(self.num_inputs, hidden_size)
-        self.actor_target_p1 = ActorPart1(self.num_inputs, hidden_size)
+        self.actor_p1 = ActorPart1(self.num_inputs, actor_hidden_size)
+        self.actor_target_p1 = ActorPart1(self.num_inputs, actor_hidden_size)
 
         # Define actor part 2
-        self.actor_p2 = ActorPart2(self.num_inputs, self.action_space, hidden_size)
-        self.actor_target_p2 = ActorPart2(self.num_inputs, self.action_space, hidden_size)
+        self.actor_p2 = ActorPart2(self.num_inputs, self.action_space, actor_hidden_size)
+        self.actor_target_p2 = ActorPart2(self.num_inputs, self.action_space, actor_hidden_size)
         self.actor_optim = Adam([
             {'params': self.actor_p1.parameters(), 'lr': self.args.actor_lr},
             {'params': self.actor_p2.parameters(), 'lr': self.args.actor_lr}
             ])            
 
-        self.critic = Critic(self.num_inputs, self.action_space, hidden_size)
-        self.critic_target = Critic(self.num_inputs, self.action_space, hidden_size)
+        self.critic = Critic(self.num_inputs, self.action_space, critic_hidden_size)
+        self.critic_target = Critic(self.num_inputs, self.action_space, critic_hidden_size)
         self.critic_optim = Adam(self.critic.parameters(), lr=self.args.critic_lr)
 
         # Make sure target is with the same weight

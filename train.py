@@ -14,10 +14,11 @@ def parse_args():
     parser.add_argument("--max_episode_len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--num_episodes", type=int, default=100000, help="number of episodes")
     # Core training parameters
-    parser.add_argument("--actor_lr", type=float, default=3e-4, help="learning rate for actor")
+    parser.add_argument("--actor_lr", type=float, default=1e-3, help="learning rate for actor")
     parser.add_argument("--critic_lr", type=float, default=1e-3, help="learning rate for critic")
     parser.add_argument("--gamma", type=float, default=0.96, help="discount factor")
-    parser.add_argument("--num_units", type=int, default=128, help="number of units in the mlp")
+    parser.add_argument("--actor_hidden_size", type=int, default=128, help="number of units in the actor network")
+    parser.add_argument("--critic_hidden_size", type=int, default=512, help="number of units in the critic network")
     parser.add_argument("--tau", type=float, default=0.001, metavar='G', help='discount factor for model (default: 0.001)')
     parser.add_argument("--memory_size", type=int, default=20000, help='size of the replay memory')
     parser.add_argument("--warmup_size", type=int, default=3000, help='number of steps before training, must larger than batch_size')
@@ -58,7 +59,7 @@ def make_env(scenario_name, arglist, benchmark=False):
 
 def train(arglist):
     env = make_env(arglist.scenario, arglist, arglist.benchmark)
-    trainer = ATOC_trainer(arglist.gamma, arglist.tau, arglist.num_units, env.observation_space[0], env.action_space[0], arglist)
+    trainer = ATOC_trainer(arglist.gamma, arglist.tau, arglist.actor_hidden_size, arglist.critic_hidden_size, env.observation_space[0], env.action_space[0], arglist)
 
     if arglist.display or arglist.restore or arglist.benchmark:
         trainer.load_model(arglist.exp_name, suffix=arglist.load)
