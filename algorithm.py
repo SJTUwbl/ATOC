@@ -189,16 +189,21 @@ class ATOC_trainer(object):
         self.memory = ReplayMemory(args.memory_size)
         self.random_process = OrnsteinUhlenbeckProcess(size=action_space.n, theta=args.ou_theta, mu=args.ou_mu, sigma=args.ou_sigma)
 
-    def select_action(self, state, step, T, action_noise=True):
-        state = torch.FloatTensor(state).to(device)
+    def select_action(self, obs_n, step, T, m, action_noise=True):
+        obs_n_tensor = torch.FloatTensor(obs_n).to(device) # (nagents, obs_shape)
         # get thoughts for each agent
-        thoughts = self.actor_p1(state)  # (nagents, obs_shape)
+        thoughts = self.actor_p1(obs_n_tensor)  #(nagents, actor_hidden_size)
 
         # decide whether to initiate communication every T steps
         if step % T == 0:
             atten_out = self.atten(thoughts) # (nagents, 1)
             is_comm = atten_out.data.numpy()
             is_comm = (atten_out > 0.5).squeeze()
+            nearest_m = self._choose_teammates(obs_n, m)
+            for index, comm in enumerate(is_comm):
+                if comm:
+                    
+
             
 
 
@@ -244,6 +249,21 @@ class ATOC_trainer(object):
         soft_update(self.actor_target_p2, self.actor_p2, self.tau)
         soft_update(self.critic_target, self.critic, self.tau)
         return value_loss.item(), policy_loss.item()
+
+    # return the id of m closest agents near every agent
+    def _choose_teammates(self, obs_n, m):
+        nagents = obs_n.shape[0]
+        # relative position
+        other_pos = (obs_n[:][-(nagents-1)*2 : ]).reshape(-1, nagents-1, 2) # (nagents, nagents-1, 2)
+        other_dist = np.sqrt(np.sum(np.square(other_pos), axis=-1)) # (nagnets, nagents-1)
+        # insert itself distance into other_dist -> total_dist
+        total_dist = []
+        for i in range(nagents):
+            total_dist.append(np.insert(other_dist[i], obj=i, values=0.0))
+        total_dist = np.stack(total_dist) # (nagents, nagents)
+        # the id of top-m agents (including itself)
+        index = np.argsort(total_dist, axis=-1)
+        return index[:][:m]
 
     def save_model(self, env_name, suffix=""):
         if not os.path.exists('models/'):
