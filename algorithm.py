@@ -96,7 +96,6 @@ class CommunicationChannel(nn.Module):
         return torch.zeros((2 * 1, self.hidden_size))
 
 
-
 class ActorPart2(nn.Module):
     def __init__(self, num_inputs, action_space, hidden_size=128):
         """
@@ -154,6 +153,9 @@ class ATOC_trainer(object):
         self.gamma = gamma
         self.tau = tau
         self.args = args
+        # id of the nearest m agents from agent i (including itself)
+        self.is_comm = None
+        self.nearest_m = None
 
         # Define actor part 1
         self.actor_p1 = ActorPart1(self.num_inputs, actor_hidden_size)
@@ -191,17 +193,26 @@ class ATOC_trainer(object):
 
     def select_action(self, obs_n, step, T, m, action_noise=True):
         obs_n_tensor = torch.FloatTensor(obs_n).to(device) # (nagents, obs_shape)
+        nagents = obs_n_tensor.shape[0]
         # get thoughts for each agent
-        thoughts = self.actor_p1(obs_n_tensor)  #(nagents, actor_hidden_size)
+        thoughts = self.actor_p1(obs_n_tensor).unsqueeze(0).repeat(nagents, 1, 1)  #(nagents, nagents, hidden_size)
 
         # decide whether to initiate communication every T steps
-        if step % T == 0:
+        if step % T == 0 or self.nearest_m == None:
             atten_out = self.atten(thoughts) # (nagents, 1)
-            is_comm = atten_out.data.numpy()
-            is_comm = (atten_out > 0.5).squeeze()
-            nearest_m = self._choose_teammates(obs_n, m)
-            for index, comm in enumerate(is_comm):
-                if comm:
+            self.is_comm = (atten_out > 0.5).unsqueeze(-1).repeat(1, m, thoughts.shape[-1])  # (nagents, m, hidden_size)
+            self.nearest_m = torch.tensor(self._choose_teammates(obs_n, m))
+            .unsqueeze(-1).repeat(1, 1, thoughts.shape[-1]) # (nagents, m, hidden_size)
+
+        selected_thoughts = thoughts.gather(dim=1, index=self.nearest_m) # (nagents, m, hidden_size)
+        input_comm = selected_thoughts * self.is_comm
+        hidden_state = self.comm.init_hidden()
+        intergrated_thoughts = self.comm(input_comm, hidden_state) # (nagents, m, hidden_size)
+
+        # TODO: intergrated_thoughts + individual_thoughts???
+        input_comm = 
+
+
                     
 
             
