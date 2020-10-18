@@ -67,10 +67,10 @@ def train(arglist):
 
     action_noise = False if arglist.display else True
     episode_step = 0
+    train_step = 0
     agent_rewards = [[0.0] for _ in range(env.n)]
     episode_rewards = [0.0]
     final_save_rewards = []                         # sum of rewards for training curve
-    train_step = 0
     time_start = time.time()
     obs_n = env.reset()
     C = None                                        # Communication group
@@ -108,6 +108,8 @@ def train(arglist):
             agent_rewards[i][-1] += rew
 
         if done or terminal:
+            if len(episode_rewards) % 10 == 0:
+                trainer.update_attention_unit()
             obs_n = env.reset()
             episode_step = 0
             episode_rewards.append(0)
@@ -120,9 +122,9 @@ def train(arglist):
             env.render()
             continue
 
-        # update trainer, if not in display mode
+        # update trainer every step, if not in display mode
         loss = None
-        if (len(trainer.memory) >= arglist.warmup_size) and (train_step % 250) == 0:
+        if len(trainer.memory) >= arglist.warmup_size:
             loss = trainer.update_parameters()
 
         # save model and display training output

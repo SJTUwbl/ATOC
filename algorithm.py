@@ -299,7 +299,7 @@ class ATOC_trainer(object):
         target_Q_n = reward_n + (self.gamma * next_Q_n).detach()            # (sample_agents, 1)
         Q_n = self.critic(obs_n, action_n)                                  # (sample_agents, 1)
 
-        value_loss = F.mse_loss(Q_batch, target_Q_batch)
+        value_loss = F.mse_loss(target_Q_n, Q_n)
         self.critic_optim.zero_grad()
         value_loss.backward()
         self.critic_optim.step()
@@ -329,9 +329,9 @@ class ATOC_trainer(object):
             # communication 
             padding = next_thoughts_n.clone().detach()
             for agent_i in range(nagents):
-                if not C[batch_index, agent_i, agent_i]: continue
+                if not C_batch[batch_index, agent_i, agent_i]: continue
 
-                thoughts_m = padding[C[batch_index, agent_i]].unsqueeze(0)      # (1, m, actor_hiddensize)
+                thoughts_m = padding[C_batch[batch_index, agent_i]].unsqueeze(0)      # (1, m, actor_hiddensize)
                 hidden_state = self.initHidden(1)
                 inter_thoughts, _ = self.comm_target(thoughts_m, hidden_state)  # (1, m, 2*comm_hidden_size)
                 inter_thoughts = inter_thoughts.squeeze()                       # (m, 2*comm_hiddensize)
@@ -339,7 +339,7 @@ class ATOC_trainer(object):
                 # update inter thoughts to thoughts clone -- inter group communication
                 # TODO: Can this avoid in-place operation?
                 padding = padding.clone()
-                padding[C[batch_index, agent_i]] = inter_thoughts
+                padding[C_batch[batch_index, agent_i]] = inter_thoughts
 
             # select action for m agents with communication
             padding[~is_comm] = 0.0
@@ -376,16 +376,16 @@ class ATOC_trainer(object):
             # communication
             padding = thoughts_n.clone().detach()
             for agent_i in range(nagents):
-                if not C[batch_index, agent_i]: continue
+                if not C_batch[batch_index, agent_i]: continue
 
-                thoughts_m = padding[C[batch_index, agent_i]].unsqueeze(0)      # (1, m, actor_hiddensize)
+                thoughts_m = padding[C_batch[batch_index, agent_i]].unsqueeze(0)      # (1, m, actor_hiddensize)
                 hidden_state = self.initHidden(1)
                 inter_thoughts, _ = self.comm(thoughts_m, hidden_state)         # (1, m, 2*comm_hiddensize)
                 inter_thoughts = inter_thoughts.squeeze()
 
                 # TODO: Can this avoid in-place operation and pass the gradient?
                 padding = padding.clone()
-                padding[C[batch_index, agent_i]] = inter_thoughts
+                padding[C_batch[batch_index, agent_i]] = inter_thoughts
 
             # select action for m agents with communication
             padding[~is_comm] = 0.0
@@ -449,7 +449,7 @@ class ATOC_trainer(object):
         C = torch.zeros(nagents, nagents).bool()
         
         # relative position
-        other_pos = (obs_n[:][-(nagents-1)*2 : ]).reshape(-1, nagents-1, 2) # (nagents, nagents-1, 2)
+        other_pos = (obs_n[:, -(nagents-1)*2:]).reshape(-1, nagents-1, 2) # (nagents, nagents-1, 2)
         other_dist = np.sqrt(np.sum(np.square(other_pos), axis=-1))         # (nagents, nagents-1)
         # insert itself distance into other_dist -> total_dist
         total_dist = []
