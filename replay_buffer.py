@@ -5,7 +5,7 @@ from collections import namedtuple
 # https://github.com/pytorch/tutorials/blob/master/Reinforcement%20(Q-)Learning%20with%20PyTorch.ipynb
 
 Transition = namedtuple(
-    'Transition', ('state', 'action', 'done', 'next_state', 'reward'))
+    'Transition', ('obs_n', 'action_n', 'reward_n', 'next_obs_n', 'C'))
 
 
 class ReplayMemory(object):

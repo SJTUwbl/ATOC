@@ -3,6 +3,7 @@ import numpy as np
 import os
 import time
 import pickle
+import torch
 import sys
 from algorithm import ATOC_trainer
 
@@ -14,6 +15,7 @@ def parse_args():
     parser.add_argument("--max_episode_len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--num_episodes", type=int, default=100000, help="number of episodes")
     parser.add_argument("--T", type=int, default=15, help="number of step to initiate a communicagtion group")
+    parser.add_argument("--m", type=int, default=1, help="number agents in a communicagtion group")
     # Core training parameters
     parser.add_argument("--actor_lr", type=float, default=1e-3, help="learning rate for actor")
     parser.add_argument("--critic_lr", type=float, default=1e-3, help="learning rate for critic")
@@ -48,9 +50,7 @@ def make_env(scenario_name, arglist, benchmark=False):
 
     # load scenario from script
     scenario = scenarios.load(scenario_name + ".py").Scenario()
-    # create world. This will make the world according to the scenario see "simple_spread.py" > make_world
     world = scenario.make_world()
-    # create multiagent environment. Now all the functions we need are in the env
     if benchmark:
         env = MultiAgentEnv(world, scenario.reset_world, scenario.reward, scenario.observation, scenario.benchmark_data)
     else:
@@ -69,14 +69,28 @@ def train(arglist):
     episode_step = 0
     agent_rewards = [[0.0] for _ in range(env.n)]
     episode_rewards = [0.0]
-    final_save_rewards = [] # sum of rewards for training curve
+    final_save_rewards = []                         # sum of rewards for training curve
     train_step = 0
     time_start = time.time()
     obs_n = env.reset()
+    C = None                                        # Communication group
 
     print('Starting iterations...')
     while True:
-        action_n = trainer.select_action(obs_n, episode_step, arglist.T action_noise)
+
+        thoughts = trainer.get_thoughts(obs_n)                  # tensor(nagents, actor_hidden_size)
+        if (episode_step % arglist.T == 0) or (C == None):
+            C = trainer.initiate_group(obs_n, arglist.m, thoughts)
+        inter_thoughts = trainer.update_thoughts(thoughts, C)   # (nagents, actor_hidden_size)
+        action_n = trainer.select_action(thoughts, inter_thoughts, C, action_noise)
+
+        # calc delta Q for the training of the attention unit
+        trainer.calc_delta_Q(obs_n, action_n, thoughts, C)
+
+        # add noise to the action for exploring
+        action_n += action_noise * trainer.random_process.sample()
+        action_n = np.clip(action_n, 0.0, 1.0)
+
         new_obs_n, reward_n, done_n, info_n = env.step(action_n)
         # print("reward_n", reward_n)
         
@@ -86,9 +100,7 @@ def train(arglist):
         terminal = (episode_step >= arglist.max_episode_len)
 
         # collect experience
-        for index in range(env.n):
-            trainer.memory.push(obs_n[index], action_n[index], done_n[index], new_obs_n[index], reward_n[index])
-
+        trainer.memory.push(obs_n, action_n, reward_n, new_obs_n, C.data.numpy())
         obs_n = new_obs_n
 
         for i, rew in enumerate(reward_n):
@@ -96,7 +108,6 @@ def train(arglist):
             agent_rewards[i][-1] += rew
 
         if done or terminal:
-            # print("episode reward", episode_step)
             obs_n = env.reset()
             episode_step = 0
             episode_rewards.append(0)
