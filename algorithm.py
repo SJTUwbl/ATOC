@@ -420,6 +420,7 @@ class ATOC_trainer(object):
             h_i_batch.append(h_i)
             delta_Q_batch.append(delta_Q)
 
+        print("delta_Q_batch values", delta_Q_batch)
         h_i_batch = torch.FloatTensor(h_i_batch).to(device)             # (batch_size, actor_hiddensize)
         delta_Q_batch = torch.FloatTensor(delta_Q_batch).to(device)     # (batch_size, )
         p_i = self.atten(h_i_batch)                                     # (batch_size, 1)

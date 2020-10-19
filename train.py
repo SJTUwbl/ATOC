@@ -15,7 +15,7 @@ def parse_args():
     parser.add_argument("--max_episode_len", type=int, default=25, help="maximum episode length")
     parser.add_argument("--num_episodes", type=int, default=100000, help="number of episodes")
     parser.add_argument("--T", type=int, default=15, help="number of step to initiate a communicagtion group")
-    parser.add_argument("--m", type=int, default=1, help="number agents in a communicagtion group")
+    parser.add_argument("--m", type=int, default=3, help="number agents in a communicagtion group")
     # Core training parameters
     parser.add_argument("--actor_lr", type=float, default=1e-3, help="learning rate for actor")
     parser.add_argument("--critic_lr", type=float, default=1e-3, help="learning rate for critic")
