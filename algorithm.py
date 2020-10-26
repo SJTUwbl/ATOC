@@ -157,29 +157,29 @@ class ATOC_trainer(object):
         self.queue = queue.Queue()
 
         # Define actor part 1
-        self.actor_p1 = ActorPart1(self.num_inputs, actor_hidden_size)
-        self.actor_target_p1 = ActorPart1(self.num_inputs, actor_hidden_size)
+        self.actor_p1 = ActorPart1(self.num_inputs, actor_hidden_size).to(device)
+        self.actor_target_p1 = ActorPart1(self.num_inputs, actor_hidden_size).to(device)
 
         # attention unit is not end-to-end trained
-        self.atten = AttentionUnit(actor_hidden_size, actor_hidden_size)
+        self.atten = AttentionUnit(actor_hidden_size, actor_hidden_size).to(device)
         self.atten_optim = Adam(self.atten.parameters(), lr=self.args.actor_lr)
 
         # Define Communication Channel
-        self.comm = CommunicationChannel(actor_hidden_size, self.comm_hidden_size)
-        self.comm_target = CommunicationChannel(actor_hidden_size, self.comm_hidden_size)
+        self.comm = CommunicationChannel(actor_hidden_size, self.comm_hidden_size).to(device)
+        self.comm_target = CommunicationChannel(actor_hidden_size, self.comm_hidden_size).to(device)
         self.comm_optim = Adam(self.comm.parameters(), lr=self.args.actor_lr)
 
         # Define actor part 2
         # input -- [thoughts, intergrated thoughts]
-        self.actor_p2 = ActorPart2(actor_hidden_size+self.comm_hidden_size*2, self.action_space, actor_hidden_size)
-        self.actor_target_p2 = ActorPart2(actor_hidden_size+self.comm_hidden_size*2, self.action_space, actor_hidden_size)
+        self.actor_p2 = ActorPart2(actor_hidden_size+self.comm_hidden_size*2, self.action_space, actor_hidden_size).to(device)
+        self.actor_target_p2 = ActorPart2(actor_hidden_size+self.comm_hidden_size*2, self.action_space, actor_hidden_size).to(device)
         self.actor_optim = Adam([
             {'params': self.actor_p1.parameters(), 'lr': self.args.actor_lr},
             {'params': self.actor_p2.parameters(), 'lr': self.args.actor_lr}
             ])
 
-        self.critic = Critic(self.num_inputs, self.action_space, critic_hidden_size)
-        self.critic_target = Critic(self.num_inputs, self.action_space, critic_hidden_size)
+        self.critic = Critic(self.num_inputs, self.action_space, critic_hidden_size).to(device)
+        self.critic_target = Critic(self.num_inputs, self.action_space, critic_hidden_size).to(device)
         self.critic_optim = Adam(self.critic.parameters(), lr=self.args.critic_lr)
 
         # Make sure target is with the same weight
@@ -205,7 +205,6 @@ class ATOC_trainer(object):
                 if C[index, j]:
                     input_comm.append(thoughts[j])
             input_comm = torch.stack(input_comm, dim=0).unsqueeze(0)        # (1, m, acotr_hidden_size)
-            
             # input communication channel to intergrate thoughts
             hidden_state = self.initHidden(batch_size)
             intergrated_thoughts, _ = self.comm(input_comm, hidden_state)   # (1, m, 2*comm_hidden_size)
@@ -213,11 +212,6 @@ class ATOC_trainer(object):
 
             # update group_index intergrated thoughts
             thoughts[C[index]] = intergrated_thoughts
-            # agent_j = 0
-            # for j in range(nagents):
-            #     if C[index, j]:
-            #         thoughts[j] = intergrated_thoughts[agent_j]
-            #         agent_j += 1
 
         return thoughts
 
@@ -283,38 +277,39 @@ class ATOC_trainer(object):
         #                               sample agents without communication
         # -----------------------------------------------------------------------------------------
         # True --> communication, False --> no communicaiton
-        ind = C_batch.any(dim=1)                                            # (batch_size, nagents) 
-        obs_n = obs_n_batch[ind==False]
-        action_n = action_n_batch[ind==False]
-        reward_n = reward_n_batch[ind==False]
-        next_obs_n = next_obs_n_batch[ind==False]                           # (sample_agents, shape)
+        # TODO: cancel the #
+        # ind = C_batch.any(dim=1)                                            # (batch_size, nagents) 
+        # obs_n = obs_n_batch[ind==False]
+        # action_n = action_n_batch[ind==False]
+        # reward_n = reward_n_batch[ind==False]
+        # next_obs_n = next_obs_n_batch[ind==False]                           # (sample_agents, shape)
 
-        # update critic
-        thoughts_n = self.actor_target_p1(next_obs_n)                       # (sample_agents, actor_hiddensize)
-        padding = torch.zeros(thoughts_n.shape[0], 2*self.comm_hidden_size)
-        input_target_actor2 = torch.cat((thoughts_n, padding), dim=-1)      # (sample_agents, hiddensize)
-        next_action_n = self.actor_target_p2(input_target_actor2)           # (sample_agents, action_shape)
-        next_Q_n = self.critic_target(next_obs_n, next_action_n)            # (sample_agents, 1)
+        # # update critic
+        # thoughts_n = self.actor_target_p1(next_obs_n)                       # (sample_agents, actor_hiddensize)
+        # padding = torch.zeros(thoughts_n.shape[0], 2*self.comm_hidden_size)
+        # input_target_actor2 = torch.cat((thoughts_n, padding), dim=-1)      # (sample_agents, hiddensize)
+        # next_action_n = self.actor_target_p2(input_target_actor2)           # (sample_agents, action_shape)
+        # next_Q_n = self.critic_target(next_obs_n, next_action_n)            # (sample_agents, 1)
         
-        target_Q_n = reward_n + (self.gamma * next_Q_n).detach()            # (sample_agents, 1)
-        Q_n = self.critic(obs_n, action_n)                                  # (sample_agents, 1)
+        # target_Q_n = reward_n + (self.gamma * next_Q_n).detach()            # (sample_agents, 1)
+        # Q_n = self.critic(obs_n, action_n)                                  # (sample_agents, 1)
 
-        value_loss = F.mse_loss(target_Q_n, Q_n)
-        self.critic_optim.zero_grad()
-        value_loss.backward()
-        self.critic_optim.step()
+        # value_loss = F.mse_loss(target_Q_n, Q_n)
+        # self.critic_optim.zero_grad()
+        # value_loss.backward()
+        # self.critic_optim.step()
         
-        # update actor
-        thoughts_actor = self.actor_p1(obs_n)
-        padding_actor = torch.zeros(thoughts_actor.shape[0], 2*self.comm_hidden_size)
-        input_actor2 = torch.torch.cat((thoughts_actor, padding_actor), dim=-1)
-        action_n_actor = self.actor_p2(input_actor2)
-        policy_loss = -self.critic(obs_n, action_n_actor)
+        # # update actor
+        # thoughts_actor = self.actor_p1(obs_n)
+        # padding_actor = torch.zeros(thoughts_actor.shape[0], 2*self.comm_hidden_size)
+        # input_actor2 = torch.torch.cat((thoughts_actor, padding_actor), dim=-1)
+        # action_n_actor = self.actor_p2(input_actor2)
+        # policy_loss = -self.critic(obs_n, action_n_actor)
 
-        policy_loss = policy_loss.mean()
-        self.actor_optim.zero_grad()
-        policy_loss.backward()
-        self.actor_optim.step()
+        # policy_loss = policy_loss.mean()
+        # self.actor_optim.zero_grad()
+        # policy_loss.backward()
+        # self.actor_optim.step()
 
         # -----------------------------------------------------------------------------------------
         #                            sample agents with communication
@@ -324,8 +319,8 @@ class ATOC_trainer(object):
         target_Q = []
         Q = []
         for batch_index in range(batch_size):
-            is_comm = C_batch[batch_index].any(dim=0)                           # (nagents,)
-            next_thoughts_n = self.actor_target_p1(next_obs_n_batch[batch_index])    # (nagents, actor_hiddensize)
+            is_comm = C_batch[batch_index].any(dim=0)                                 # (nagents,)
+            next_thoughts_n = self.actor_target_p1(next_obs_n_batch[batch_index])     # (nagents, actor_hiddensize)
             # communication 
             padding = next_thoughts_n.clone().detach()
             for agent_i in range(nagents):
@@ -345,7 +340,7 @@ class ATOC_trainer(object):
             padding[~is_comm] = 0.0
             input_target_actor2 = torch.cat((next_thoughts_n, padding), dim=-1)     # (nagents, a_hiddensie+c_hiddensize)
             next_action_n = self.actor_target_p2(input_target_actor2)          # (nagents, action_shape)
-            print('next_action_n shape', next_action_n.shape)
+            # print('next_action_n shape', next_action_n.shape)
             next_obs_m = next_obs_n_batch[batch_index, is_comm]                # (m, obs_shape)
             next_action_m = next_action_n[is_comm]                             # (m, action_shape)
 
@@ -362,7 +357,6 @@ class ATOC_trainer(object):
 
         target_Q = torch.stack(target_Q, dim=0)
         Q = torch.stack(Q, dim=0)
-        print("Q value shape", target_Q.shape, Q.shape)
         critic_loss = F.mse_loss(target_Q, Q)
         self.critic_optim.zero_grad()
         critic_loss.backward()
@@ -376,7 +370,7 @@ class ATOC_trainer(object):
             # communication
             padding = thoughts_n.clone().detach()
             for agent_i in range(nagents):
-                if not C_batch[batch_index, agent_i]: continue
+                if not C_batch[batch_index, agent_i, agent_i]: continue
 
                 thoughts_m = padding[C_batch[batch_index, agent_i]].unsqueeze(0)      # (1, m, actor_hiddensize)
                 hidden_state = self.initHidden(1)
@@ -397,8 +391,8 @@ class ATOC_trainer(object):
             actor_loss_batch = -self.critic(obs_m, action_m)             # (m, 1)
             actor_loss.append(actor_loss_batch)
 
-        actor_loss = torch.stack(actor_loss, dim=0)
-        print('actor_loss shape', actor_loss.shape)
+        actor_loss = torch.stack(actor_loss, dim=0)                      # (batch_size, m, 1)
+        # print('actor_loss shape', actor_loss.shape)
         actor_loss = actor_loss.mean()
         self.actor_optim.zero_grad()
         self.comm_optim.zero_grad()
@@ -465,6 +459,11 @@ class ATOC_trainer(object):
         for index, comm in enumerate(is_comm):
             if comm: C[index, neighbour_m[index]] = True
 
+        # TODO: test the other parts of this project without attention unit
+        C = torch.zeros(nagents, nagents)
+        C[0] = 1
+        C = C.bool()
+
         return C
 
     def initHidden(self, batch_size):
@@ -481,7 +480,10 @@ class ATOC_trainer(object):
             'actor_p2': self.actor_p2.state_dict(),
             'actor_target_p2': self.actor_target_p2.state_dict(),
             'critic'  : self.critic.state_dict(),
-            'critic_target': self.critic_target.state_dict()
+            'critic_target': self.critic_target.state_dict(),
+            'comm'    : self.comm.state_dict(),
+            'comm_target': self.comm_target.state_dict(),
+            'atten': self.atten.state_dict()
         }
         torch.save(model, save_path)
         print('Saving models to {}'.format(save_path))
@@ -496,4 +498,7 @@ class ATOC_trainer(object):
         self.actor_target_p2.load_state_dict(model['actor_target_p2'])
         self.critic.load_state_dict(model['critic'])
         self.critic_target.load_state_dict(model['critic_target'])
+        self.comm.load_state_dict(model['comm'])
+        self.comm_target.load_state_dict(model['comm_target'])
+        self.atten.load_state_dict(model['atten'])
 

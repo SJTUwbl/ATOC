@@ -6,6 +6,7 @@ import pickle
 import torch
 import sys
 from algorithm import ATOC_trainer
+from torch.utils.tensorboard import SummaryWriter
 
 
 def parse_args():
@@ -23,16 +24,17 @@ def parse_args():
     parser.add_argument("--actor_hidden_size", type=int, default=128, help="number of units in the actor network")
     parser.add_argument("--critic_hidden_size", type=int, default=512, help="number of units in the critic network")
     parser.add_argument("--tau", type=float, default=0.001, metavar='G', help='discount factor for model (default: 0.001)')
-    parser.add_argument("--memory_size", type=int, default=20000, help='size of the replay memory')
-    parser.add_argument("--warmup_size", type=int, default=3000, help='number of steps before training, must larger than batch_size')
+    parser.add_argument("--memory_size", type=int, default=100000, help='size of the replay memory')
+    parser.add_argument("--warmup_size", type=int, default=30000, help='number of steps before training, must larger than batch_size')
     parser.add_argument("--batch_size", type=int, default=2560, help="number of steps to optimize at the same time")
+    # Random process
     parser.add_argument("--ou_theta", type=float, default=0.15, help="noise theta")
     parser.add_argument("--ou_sigma", type=float, default=0.2, help="noise sigma")
     parser.add_argument("--ou_mu", type=float, default=0.0, help="noise mu")
     # Checkpointing
     parser.add_argument("--exp_name", type=str, default='test', help="name of the experiment")
     parser.add_argument("--save_path", type=str, default="", help="directory in which training state and model should be saved")
-    parser.add_argument("--save_rate", type=int, default=100, help="save model once every time this many episodes are completed")
+    parser.add_argument("--save_rate", type=int, default=10, help="save model once every time this many episodes are completed")
     # Evaluation
     parser.add_argument("--load", type=str, default="", help="which model to load")
     parser.add_argument("--restore", action="store_true", default=False)
@@ -62,6 +64,8 @@ def train(arglist):
     env = make_env(arglist.scenario, arglist, arglist.benchmark)
     trainer = ATOC_trainer(arglist.gamma, arglist.tau, arglist.actor_hidden_size, arglist.critic_hidden_size, env.observation_space[0], env.action_space[0], arglist)
 
+    writer = SummaryWriter()
+
     if arglist.display or arglist.restore or arglist.benchmark:
         trainer.load_model(arglist.exp_name, suffix=arglist.load)
 
@@ -81,6 +85,7 @@ def train(arglist):
         thoughts = trainer.get_thoughts(obs_n)                  # tensor(nagents, actor_hidden_size)
         if (episode_step % arglist.T == 0) or (C == None):
             C = trainer.initiate_group(obs_n, arglist.m, thoughts)
+        # writer.add_graph(trainer.get_thoughts, thoughts)
         inter_thoughts = trainer.update_thoughts(thoughts, C)   # (nagents, actor_hidden_size)
         action_n = trainer.select_action(thoughts, inter_thoughts, C, action_noise)
 
@@ -108,8 +113,9 @@ def train(arglist):
             agent_rewards[i][-1] += rew
 
         if done or terminal:
-            if len(episode_rewards) % 10 == 0:
-                trainer.update_attention_unit()
+            # TODO: not to train attention unit
+            # if len(episode_rewards) % 10 == 0:
+            #     trainer.update_attention_unit()
             obs_n = env.reset()
             episode_step = 0
             episode_rewards.append(0)
@@ -124,14 +130,16 @@ def train(arglist):
 
         # update trainer every step, if not in display mode
         loss = None
-        if len(trainer.memory) >= arglist.warmup_size:
+        if len(trainer.memory) >= arglist.warmup_size: # and (train_step % arglist.max_episode_len == 0):
+            print('update')
             loss = trainer.update_parameters()
+
 
         # save model and display training output
         if terminal and (len(episode_rewards) % arglist.save_rate == 0):
             trainer.save_model(arglist.exp_name, suffix=str(len(episode_rewards)//arglist.save_rate))
             print("steps: {}, episodes: {}, mean_episode_reward: {}, time: {}".format(
-                train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate:]), round(time.time() - time_start, 3)))
+                train_step, len(episode_rewards), np.mean(episode_rewards[-arglist.save_rate-1:-1]), round(time.time() - time_start, 3)))
             time_start = time.time()
             final_save_rewards.append(np.mean(episode_rewards[-arglist.save_rate:]))
 
