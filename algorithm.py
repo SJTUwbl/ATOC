@@ -45,7 +45,6 @@ class ActorPart1(nn.Module):
         x = F.relu(x)
         x = self.linear2(x)
         x = self.ln2(x)
-        x = F.relu(x)
         return x
         # returns "individual thought", since this will go into the Attentional Unit
 
@@ -109,13 +108,11 @@ class ActorPart2(nn.Module):
         self.ln1 = nn.LayerNorm(hidden_size)
         self.linear2 = nn.Linear(hidden_size, num_outputs)
 
-    def forward(self, inputs):
-        x = inputs
-        x = self.linear1(x)
-        x = self.ln1(x)
+    def forward(self, thoughts, padding):
+        x = thoughts + padding
         x = F.relu(x)
-        x = self.linear2(x)
-        x = torch.tanh(x)
+        # x = F.relu(self.ln1(self.linear1(x)))
+        x = torch.sigmoid(self.linear2(x))
         return x
 
 
@@ -131,7 +128,7 @@ class Critic(nn.Module):
         self.V = nn.Linear(hidden_size//2, 1)
 
     def forward(self, inputs, actions):
-        x = torch.cat((inputs, actions), dim=1)
+        x = torch.cat((inputs, actions), dim=-1)
         x = self.linear1(x)
         x = self.ln1(x)
         x = F.relu(x)
@@ -171,8 +168,9 @@ class ATOC_trainer(object):
 
         # Define actor part 2
         # input -- [thoughts, intergrated thoughts]
-        self.actor_p2 = ActorPart2(actor_hidden_size+self.comm_hidden_size*2, self.action_space, actor_hidden_size).to(device)
-        self.actor_target_p2 = ActorPart2(actor_hidden_size+self.comm_hidden_size*2, self.action_space, actor_hidden_size).to(device)
+        # self.actor_p2 = ActorPart2(actor_hidden_size+self.comm_hidden_size*2, self.action_space, actor_hidden_size).to(device)
+        self.actor_p2 = ActorPart2(actor_hidden_size, self.action_space, actor_hidden_size).to(device)
+        self.actor_target_p2 = ActorPart2(actor_hidden_size, self.action_space, actor_hidden_size).to(device)
         self.actor_optim = Adam([
             {'params': self.actor_p1.parameters(), 'lr': self.args.actor_lr},
             {'params': self.actor_p2.parameters(), 'lr': self.args.actor_lr}
@@ -193,7 +191,6 @@ class ATOC_trainer(object):
         self.random_process = OrnsteinUhlenbeckProcess(size=action_space.n, theta=args.ou_theta, mu=args.ou_mu, sigma=args.ou_sigma)
 
     def update_thoughts(self, thoughts, C):
-        batch_size = 1
         nagents = thoughts.shape[0]
         thoughts = thoughts.clone().detach()
 
@@ -206,7 +203,7 @@ class ATOC_trainer(object):
                     input_comm.append(thoughts[j])
             input_comm = torch.stack(input_comm, dim=0).unsqueeze(0)        # (1, m, acotr_hidden_size)
             # input communication channel to intergrate thoughts
-            hidden_state = self.initHidden(batch_size)
+            hidden_state = torch.zeros((2 * 1, 1, self.comm_hidden_size)).to(device)
             intergrated_thoughts, _ = self.comm(input_comm, hidden_state)   # (1, m, 2*comm_hidden_size)
             intergrated_thoughts = intergrated_thoughts.squeeze()
 
@@ -215,7 +212,7 @@ class ATOC_trainer(object):
 
         return thoughts
 
-    def select_action(self, thoughts, inter_thoughts, C, action_noise=True):
+    def select_action(self, thoughts, padding, C):
         nagents = thoughts.shape[0]
 
         # merge invidual thoughts and intergrated thoughts
@@ -223,14 +220,11 @@ class ATOC_trainer(object):
         # agent withouth communication padding with zeros
         for i in range(nagents):
             if not is_comm[i]:
-                inter_thoughts[i] = 0
+                padding[i] = 0
 
-        # TODO: [intergrated_thoughts, individual_thoughts] ???
-        # (nagents, actor_hidden_size+2*comm_hidden_size)
-        input_actor2 = torch.cat((thoughts, inter_thoughts), dim=-1)
         # input to part II of the actor
-        actor2_action = self.actor_p2(input_actor2)
-        action = actor2_action.data.numpy()
+        actor2_action = self.actor_p2(thoughts, padding)
+        action = actor2_action.cpu().data.numpy()
 
         return action
 
@@ -285,12 +279,11 @@ class ATOC_trainer(object):
         # next_obs_n = next_obs_n_batch[ind==False]                           # (sample_agents, shape)
 
         # # update critic
-        # thoughts_n = self.actor_target_p1(next_obs_n)                       # (sample_agents, actor_hiddensize)
-        # padding = torch.zeros(thoughts_n.shape[0], 2*self.comm_hidden_size)
-        # input_target_actor2 = torch.cat((thoughts_n, padding), dim=-1)      # (sample_agents, hiddensize)
-        # next_action_n = self.actor_target_p2(input_target_actor2)           # (sample_agents, action_shape)
+        # next_thoughts_n = self.actor_target_p1(next_obs_n)                  # (sample_agents, actor_hiddensize)
+        # padding = torch.zeros_like(next_thoughts_n).to(device)
+        # next_action_n = self.actor_target_p2(next_thoughts_n, padding)      # (sample_agents, action_shape)
         # next_Q_n = self.critic_target(next_obs_n, next_action_n)            # (sample_agents, 1)
-        
+
         # target_Q_n = reward_n + (self.gamma * next_Q_n).detach()            # (sample_agents, 1)
         # Q_n = self.critic(obs_n, action_n)                                  # (sample_agents, 1)
 
@@ -300,10 +293,9 @@ class ATOC_trainer(object):
         # self.critic_optim.step()
         
         # # update actor
-        # thoughts_actor = self.actor_p1(obs_n)
-        # padding_actor = torch.zeros(thoughts_actor.shape[0], 2*self.comm_hidden_size)
-        # input_actor2 = torch.torch.cat((thoughts_actor, padding_actor), dim=-1)
-        # action_n_actor = self.actor_p2(input_actor2)
+        # thoughts_n = self.actor_p1(obs_n)
+        # padding_actor = torch.zeros_like(thoughts_n).to(device)
+        # action_n_actor = self.actor_p2(thoughts_n, padding_actor)
         # policy_loss = -self.critic(obs_n, action_n_actor)
 
         # policy_loss = policy_loss.mean()
@@ -322,27 +314,30 @@ class ATOC_trainer(object):
             is_comm = C_batch[batch_index].any(dim=0)                                 # (nagents,)
             next_thoughts_n = self.actor_target_p1(next_obs_n_batch[batch_index])     # (nagents, actor_hiddensize)
             # communication 
-            padding = next_thoughts_n.clone().detach()
+            # padding = next_thoughts_n.clone().detach()
+            padding = torch.zeros_like(next_thoughts_n).to(device)
             for agent_i in range(nagents):
                 if not C_batch[batch_index, agent_i, agent_i]: continue
 
-                thoughts_m = padding[C_batch[batch_index, agent_i]].unsqueeze(0)      # (1, m, actor_hiddensize)
-                hidden_state = self.initHidden(1)
+                # (1, m, actor_hiddensize)
+                thoughts_m = next_thoughts_n[C_batch[batch_index, agent_i]].unsqueeze(0)
+                hidden_state = torch.zeros((2 * 1, 1, self.comm_hidden_size)).to(device)
                 inter_thoughts, _ = self.comm_target(thoughts_m, hidden_state)  # (1, m, 2*comm_hidden_size)
                 inter_thoughts = inter_thoughts.squeeze()                       # (m, 2*comm_hiddensize)
                 
                 # update inter thoughts to thoughts clone -- inter group communication
-                # TODO: Can this avoid in-place operation?
-                padding = padding.clone()
+                # (nagents, nagents)
+                # mask = C_batch[batch_index, agent_i].unsqueeze(-1).repeat(1, nagents)
+                # mask = ~mask
+                # padding = padding * mask
                 padding[C_batch[batch_index, agent_i]] = inter_thoughts
 
-            # select action for m agents with communication
-            padding[~is_comm] = 0.0
-            input_target_actor2 = torch.cat((next_thoughts_n, padding), dim=-1)     # (nagents, a_hiddensie+c_hiddensize)
-            next_action_n = self.actor_target_p2(input_target_actor2)          # (nagents, action_shape)
+            # select action for m agents with communicaiton
+            next_thoughts_m = next_thoughts_n[is_comm]                         # (m, actor_hiddensize)
+            padding = padding[is_comm]                                         # (m, actor_hiddensize)
+            next_action_m = self.actor_target_p2(next_thoughts_m, padding)     # (m, action_shape)
             # print('next_action_n shape', next_action_n.shape)
             next_obs_m = next_obs_n_batch[batch_index, is_comm]                # (m, obs_shape)
-            next_action_m = next_action_n[is_comm]                             # (m, action_shape)
 
             next_Q_m = self.critic_target(next_obs_m, next_action_m)           # (m, 1)
             reward_m = reward_n_batch[batch_index, is_comm]                    # (m, 1)
@@ -368,24 +363,27 @@ class ATOC_trainer(object):
             is_comm = C_batch[batch_index].any(dim=0)                           # (nagents, )
             thoughts_n = self.actor_p1(obs_n_batch[batch_index])                # (nagents, actor_hiddensize)
             # communication
-            padding = thoughts_n.clone().detach()
+            # padding = thoughts_n.clone().detach()
+            padding = torch.zeros_like(thoughts_n).to(device)
             for agent_i in range(nagents):
                 if not C_batch[batch_index, agent_i, agent_i]: continue
 
-                thoughts_m = padding[C_batch[batch_index, agent_i]].unsqueeze(0)      # (1, m, actor_hiddensize)
-                hidden_state = self.initHidden(1)
-                inter_thoughts, _ = self.comm(thoughts_m, hidden_state)         # (1, m, 2*comm_hiddensize)
-                inter_thoughts = inter_thoughts.squeeze()
+                thoughts_m = thoughts_n[C_batch[batch_index, agent_i]].unsqueeze(0)      # (1, m, actor_hiddensize)
+                hidden_state = torch.zeros((2 * 1, 1, self.comm_hidden_size)).to(device)
+                inter_thoughts, _ = self.comm(thoughts_m, hidden_state)         
+                inter_thoughts = inter_thoughts.squeeze()                       # (m, 2*comm_hiddensize)
 
                 # TODO: Can this avoid in-place operation and pass the gradient?
-                padding = padding.clone()
+                # padding = padding.clone()
                 padding[C_batch[batch_index, agent_i]] = inter_thoughts
 
             # select action for m agents with communication
-            padding[~is_comm] = 0.0
-            input_actor2 = torch.cat((thoughts_n, padding), dim=-1)      # (nagents, a_hiddensize+c_hiddensize)
-            action_n = self.actor_p2(input_actor2)                       # (nagents, action shape)
-            action_m = action_n[is_comm]                                 # (m, action shape)
+            # padding[~is_comm] = 0.0
+            # input_actor2 = torch.cat((thoughts_n, padding), dim=-1)      # (nagents, a_hiddensize+c_hiddensize)
+            thoughts_m = thoughts_n[is_comm]
+            padding = padding[is_comm]
+            action_m = self.actor_p2(thoughts_m, padding)                # (nagents, action shape)
+            # action_m = action_n[is_comm]                               # (m, action shape)
             obs_m = obs_n_batch[batch_index, is_comm]                    # (m, obs shape)
 
             actor_loss_batch = -self.critic(obs_m, action_m)             # (m, 1)
@@ -400,11 +398,12 @@ class ATOC_trainer(object):
         self.actor_optim.step()
         self.comm_optim.step()
 
+
         soft_update(self.actor_target_p1, self.actor_p1, self.tau)
         soft_update(self.actor_target_p2, self.actor_p2, self.tau)
         soft_update(self.comm_target, self.comm, self.tau)
         soft_update(self.critic_target, self.critic, self.tau)
-        return critic_loss.item(), actor_loss.item()
+        return 0, 0
 
     def update_attention_unit(self):
         h_i_batch = []
@@ -465,9 +464,6 @@ class ATOC_trainer(object):
         C = C.bool()
 
         return C
-
-    def initHidden(self, batch_size):
-        return torch.zeros((2 * 1, batch_size, self.comm_hidden_size))
 
     def save_model(self, env_name, suffix=""):
         if not os.path.exists('models/'):
