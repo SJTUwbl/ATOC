@@ -1,4 +1,4 @@
-# ATOC
+# ATOC (To be continued...)
 Code for [*Learning Attentional Communication for Multi-Agent Cooperation*](https://arxiv.org/abs/1805.07733) (Jiechuan Jiang, Zongqing Lu, NIPS 2018)
 
 ## Requirements
