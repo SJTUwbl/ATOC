@@ -17,7 +17,7 @@ def parse_args():
     parser.add_argument("--T", type=int, default=15, help="number of step to initiate a communicagtion group")
     parser.add_argument("--m", type=int, default=3, help="number agents in a communicagtion group")
     # Core training parameters
-    parser.add_argument("--actor_lr", type=float, default=3e-3, help="learning rate for actor")
+    parser.add_argument("--actor_lr", type=float, default=3e-4, help="learning rate for actor")
     parser.add_argument("--critic_lr", type=float, default=1e-3, help="learning rate for critic")
     parser.add_argument("--gamma", type=float, default=0.96, help="discount factor")
     parser.add_argument("--actor_hidden_size", type=int, default=128, help="number of units in the actor network")

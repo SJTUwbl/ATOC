@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch.optim import Adam
 import torch.nn.functional as F
 import os
+import time
 from replay_buffer import ReplayMemory
 import queue
 from random_process import OrnsteinUhlenbeckProcess
@@ -306,7 +307,6 @@ class ATOC_trainer(object):
         # -----------------------------------------------------------------------------------------
         #                            sample agents with communication
         # -----------------------------------------------------------------------------------------
-
         # update critic
         target_Q = []
         Q = []
@@ -314,7 +314,6 @@ class ATOC_trainer(object):
             is_comm = C_batch[batch_index].any(dim=0)                                 # (nagents,)
             next_thoughts_n = self.actor_target_p1(next_obs_n_batch[batch_index])     # (nagents, actor_hiddensize)
             # communication 
-            # padding = next_thoughts_n.clone().detach()
             padding = torch.zeros_like(next_thoughts_n).to(device)
             for agent_i in range(nagents):
                 if not C_batch[batch_index, agent_i, agent_i]: continue
@@ -325,18 +324,13 @@ class ATOC_trainer(object):
                 inter_thoughts, _ = self.comm_target(thoughts_m, hidden_state)  # (1, m, 2*comm_hidden_size)
                 inter_thoughts = inter_thoughts.squeeze()                       # (m, 2*comm_hiddensize)
                 
-                # update inter thoughts to thoughts clone -- inter group communication
-                # (nagents, nagents)
-                # mask = C_batch[batch_index, agent_i].unsqueeze(-1).repeat(1, nagents)
-                # mask = ~mask
-                # padding = padding * mask
+                # TODO: Can this avoid in-place operation and pass the gradient?
                 padding[C_batch[batch_index, agent_i]] = inter_thoughts
 
             # select action for m agents with communicaiton
             next_thoughts_m = next_thoughts_n[is_comm]                         # (m, actor_hiddensize)
             padding = padding[is_comm]                                         # (m, actor_hiddensize)
             next_action_m = self.actor_target_p2(next_thoughts_m, padding)     # (m, action_shape)
-            # print('next_action_n shape', next_action_n.shape)
             next_obs_m = next_obs_n_batch[batch_index, is_comm]                # (m, obs_shape)
 
             next_Q_m = self.critic_target(next_obs_m, next_action_m)           # (m, 1)
@@ -363,7 +357,6 @@ class ATOC_trainer(object):
             is_comm = C_batch[batch_index].any(dim=0)                           # (nagents, )
             thoughts_n = self.actor_p1(obs_n_batch[batch_index])                # (nagents, actor_hiddensize)
             # communication
-            # padding = thoughts_n.clone().detach()
             padding = torch.zeros_like(thoughts_n).to(device)
             for agent_i in range(nagents):
                 if not C_batch[batch_index, agent_i, agent_i]: continue
@@ -374,30 +367,24 @@ class ATOC_trainer(object):
                 inter_thoughts = inter_thoughts.squeeze()                       # (m, 2*comm_hiddensize)
 
                 # TODO: Can this avoid in-place operation and pass the gradient?
-                # padding = padding.clone()
                 padding[C_batch[batch_index, agent_i]] = inter_thoughts
 
             # select action for m agents with communication
-            # padding[~is_comm] = 0.0
-            # input_actor2 = torch.cat((thoughts_n, padding), dim=-1)      # (nagents, a_hiddensize+c_hiddensize)
             thoughts_m = thoughts_n[is_comm]
             padding = padding[is_comm]
             action_m = self.actor_p2(thoughts_m, padding)                # (nagents, action shape)
-            # action_m = action_n[is_comm]                               # (m, action shape)
             obs_m = obs_n_batch[batch_index, is_comm]                    # (m, obs shape)
 
             actor_loss_batch = -self.critic(obs_m, action_m)             # (m, 1)
             actor_loss.append(actor_loss_batch)
 
         actor_loss = torch.stack(actor_loss, dim=0)                      # (batch_size, m, 1)
-        # print('actor_loss shape', actor_loss.shape)
         actor_loss = actor_loss.mean()
         self.actor_optim.zero_grad()
         self.comm_optim.zero_grad()
         actor_loss.backward()
         self.actor_optim.step()
         self.comm_optim.step()
-
 
         soft_update(self.actor_target_p1, self.actor_p1, self.tau)
         soft_update(self.actor_target_p2, self.actor_p2, self.tau)
