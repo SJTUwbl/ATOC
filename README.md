@@ -1,4 +1,5 @@
 # ATOC (To be continued...)
+# 代码并未复现成功，仅供参考，请不要在此份代码上浪费太多精力！！！
 Code for [*Learning Attentional Communication for Multi-Agent Cooperation*](https://arxiv.org/abs/1805.07733) (Jiechuan Jiang, Zongqing Lu, NIPS 2018)
 
 ## Requirements
